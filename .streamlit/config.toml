@@ -1,0 +1,20 @@
+[client]
+# Oculta los botones "Deploy", "Settings", "Rerun" del menú superior derecho.
+# Los usuarios solo ven la app, sin tentación de pulsar cosas de developer.
+toolbarMode = "viewer"
+showErrorDetails = false
+
+[browser]
+gatherUsageStats = false
+
+[server]
+# Tamaño máximo de subida en MB (datapacks grandes)
+maxUploadSize = 200
+# No abre navegador automáticamente cuando arranca en servidor
+headless = true
+
+[theme]
+primaryColor = "#0066CC"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F0F2F6"
+textColor = "#262730"

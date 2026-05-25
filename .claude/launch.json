@@ -1,0 +1,20 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "anonimizador",
+      "runtimeExecutable": "streamlit",
+      "runtimeArgs": [
+        "run",
+        "C:\\Users\\Usuario\\implica-anonimizador\\streamlit_app.py",
+        "--server.headless",
+        "true",
+        "--browser.gatherUsageStats",
+        "false",
+        "--server.port",
+        "8765"
+      ],
+      "port": 8765
+    }
+  ]
+}

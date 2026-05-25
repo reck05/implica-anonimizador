@@ -1,0 +1,48 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+env/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+
+# --- Configs locales con secretos ---
+.env
+.env.local
+.streamlit/secrets.toml
+
+# --- DATOS CONFIDENCIALES — JAMÁS commitear ---
+# Mappings con nombres reales de clientes
+projects/*.json
+!projects/.gitkeep
+# Carpetas con documentos del cliente
+input/
+output/
+clientes/
+real/
+# Archivos Office y PDF (solo permitidos los de tests/fixtures que son sintéticos)
+*.xlsx
+*.docx
+*.pptx
+*.pdf
+*.xlsm
+!tests/fixtures/*
+
+# --- Logs ---
+*.log
+logs/
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# --- Cloudflared y túneles ---
+cloudflared.exe
+ngrok.exe
