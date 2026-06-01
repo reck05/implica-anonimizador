@@ -125,6 +125,14 @@ with st.sidebar:
                         )
 
     st.divider()
+
+    # Botón para limpiar estado y empezar de nuevo
+    if st.button("🔄 Empezar de nuevo", use_container_width=True, help="Limpia los archivos cargados y la tabla de candidatos. No borra mappings guardados."):
+        for key in ("df", "upload_data", "proj", "is_accounting", "clusters_raw", "codename_mode_used"):
+            st.session_state.pop(key, None)
+        st.rerun()
+
+    st.divider()
     st.caption(
         "🛡️ Confidencialidad: nada sale de esta máquina. "
         "Los mappings (`projects/<codename>.json`) son sólo nombres↔codenames, "
@@ -411,8 +419,12 @@ with tab_anon:
     doctype_forced = doctype_override[0]
 
     if st.button("🔍 Analizar", type="primary"):
-        with st.spinner("Detectando tipo de documento y candidatos..."):
-            all_texts, pgc_entities, doctypes, errors = _scan_files(uploaded)
+        try:
+            with st.spinner("Detectando tipo de documento..."):
+                all_texts, pgc_entities, doctypes, errors = _scan_files(uploaded)
+        except Exception as e:
+            st.error(f"Error escaneando archivos: {e}")
+            st.stop()
 
         # Mostrar diagnóstico de detección
         if doctypes:
@@ -465,11 +477,35 @@ with tab_anon:
         else:
             st.info("📄 Documentos narrativos. Usando NER + regex.")
 
-        with st.spinner(f"{'Clusterizando' if is_accounting else 'Detectando con NER+regex'}..."):
-            clusters = _build_candidates(all_texts, pgc_entities, use_ner=use_ner)
+        # Mensaje distinto si es la primera vez que se usa NER (descarga modelo spaCy ~40MB)
+        if is_accounting:
+            spinner_msg = "Clusterizando entidades del libro contable..."
+        else:
+            spinner_msg = (
+                "Detectando entidades con NER+regex... "
+                "(la primera vez en este servidor descarga el modelo de español, ~40MB, tarda 30-60s)"
+            )
+
+        try:
+            with st.spinner(spinner_msg):
+                clusters = _build_candidates(all_texts, pgc_entities, use_ner=use_ner)
+        except RuntimeError as e:
+            st.error(
+                f"Error cargando el modelo de NLP: {e}\n\n"
+                "Si estás en Streamlit Cloud, intenta refrescar la página. "
+                "El modelo se descarga la primera vez y a veces tarda."
+            )
+            st.stop()
+        except Exception as e:
+            st.error(f"Error inesperado al analizar: {e}")
+            st.stop()
 
         if not clusters:
-            st.warning("No se detectaron candidatos.")
+            st.warning(
+                "No se detectaron candidatos a anonimizar. "
+                "Si el archivo SÍ tiene nombres a anonimizar, prueba a forzar el tipo "
+                "manualmente en el selector de arriba."
+            )
             st.stop()
 
         pm = mapping_mod.load(project)
