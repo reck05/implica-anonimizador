@@ -10,6 +10,6 @@ spacy>=3.7.0,<4.0.0
 rapidfuzz>=3.6.0
 pydantic>=2.6.0
 
-# Modelo de NLP en español — se instala como wheel directo desde el release oficial.
-# Necesario para que Streamlit Cloud lo coja sin tener que ejecutar `spacy download` manualmente.
-https://github.com/explosion/spacy-models/releases/download/es_core_news_md-3.7.0/es_core_news_md-3.7.0-py3-none-any.whl
+# El modelo es_core_news_md se descarga en runtime la primera vez (ver detectors.py).
+# No lo añadimos aquí como wheel URL porque algunos hosts (Streamlit Cloud, etc.)
+# bloquean URLs externas en requirements.txt y falla el build entero.

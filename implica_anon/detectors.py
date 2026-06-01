@@ -226,7 +226,11 @@ def normalize_person(name: str) -> str:
 
 @lru_cache(maxsize=1)
 def _load_nlp():
-    """Carga spaCy en español. Cacheado porque es lento."""
+    """Carga spaCy en español. Cacheado porque es lento.
+
+    Si el modelo no está instalado (típico en Streamlit Cloud la primera vez),
+    lo descarga automáticamente. Solo se hace en el primer uso.
+    """
     try:
         import spacy
     except ImportError as e:
@@ -234,13 +238,26 @@ def _load_nlp():
             "spaCy no está instalado. Ejecuta: pip install spacy"
         ) from e
 
+    model_name = "es_core_news_md"
     try:
-        return spacy.load("es_core_news_md")
-    except OSError as e:
-        raise RuntimeError(
-            "Modelo es_core_news_md no encontrado. Ejecuta:\n"
-            "  python -m spacy download es_core_news_md"
-        ) from e
+        return spacy.load(model_name)
+    except OSError:
+        # Modelo no instalado — descargar al vuelo (~40MB)
+        import subprocess
+        import sys
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "spacy", "download", model_name],
+                check=True,
+                capture_output=True,
+                timeout=300,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            raise RuntimeError(
+                f"No se pudo descargar el modelo {model_name}. "
+                "Ejecuta manualmente: python -m spacy download es_core_news_md"
+            ) from e
+        return spacy.load(model_name)
 
 
 def detect_candidates(
