@@ -112,21 +112,31 @@ Debe decir algo como `claude 0.x.x`. Si dice eso → ✅ Claude Code está insta
 
 ---
 
-## Paso 5 — Crear una cuenta para Claude (5 minutos)
+## Paso 5 — Cuenta para Claude (5 minutos)
 
-Para que Claude Code funcione, necesitas una cuenta de Anthropic (la empresa que hace Claude).
+> ⚠️ **OJO — Anthropic tiene DOS productos distintos con cuentas separadas. NO los confundas.**
 
-1. Ve a 👉 **https://console.anthropic.com/**
-2. Pulsa "Sign up"
-3. Regístrate con tu email de Implica (o el que quieras)
-4. Verifica el email cuando te llegue
-5. Cuando entres a la consola, déjala abierta
+| Producto | URL | Tipo de pago | Para qué |
+|---|---|---|---|
+| **Claude.ai** | https://claude.ai | Suscripción mensual fija ($20-200/mes) | Lo que usamos aquí. **ESTA es la que necesitas.** |
+| Console (API) | https://console.anthropic.com | Créditos prepago (pay-as-you-go) | API directa para desarrolladores. **NO la necesitas para Claude Code.** |
 
-> 💰 **Sobre el coste**: Claude Code tiene un plan gratuito limitado y planes de pago ($20-200/mes). Para este proyecto el plan gratis o el de $20 te llega. Pregunta a Ricardo o a IT antes de meter tarjeta — puede que Implica tenga cuenta corporativa.
+### Lo que tienes que hacer
+
+1. Ve a 👉 **https://claude.ai** (la web normal de Claude)
+2. **Sign up** si no tienes cuenta, o **Log in** si ya la tienes
+3. Si vas a usar Claude Code de verdad para este proyecto, suscríbete a **Claude Pro ($20/mes)** desde https://claude.ai/upgrade
+   - Es la opción más simple y predecible para uso normal
+   - Para este proyecto Pro te llega de sobra
+4. Anota tu email y contraseña — los vas a necesitar en el paso siguiente
+
+> 💰 **Antes de pagar**: pregunta a Ricardo o IT si Implica tiene una cuenta corporativa que puedas usar.
+>
+> **¿Y la "consola de Anthropic" (console.anthropic.com)?** Es otro producto distinto, con créditos prepago. Si entras ahí, te va a pedir cargar dinero — **ciérrala**. Para Claude Code lo que necesitas es Claude.ai (paso de arriba), no la consola.
 
 ---
 
-## Paso 6 — Arrancar Claude Code por primera vez (1 minuto)
+## Paso 6 — Arrancar Claude Code por primera vez (2 minutos)
 
 1. Abre una NUEVA ventana negra (Windows → cmd → Enter)
 2. Cambia a tu carpeta de usuario:
@@ -142,8 +152,27 @@ Para que Claude Code funcione, necesitas una cuenta de Anthropic (la empresa que
    ```
    claude
    ```
-5. La PRIMERA vez te pedirá login. Te abrirá el navegador automáticamente. Loguéate con la cuenta de Anthropic del paso 5.
-6. Vuelves a la ventana negra. Ya estás dentro de Claude Code. Verás un cursor parpadeando esperando que escribas algo.
+5. La PRIMERA vez te pedirá login. Te dará varias opciones — **MUY IMPORTANTE elegir bien**:
+
+   | Opción que ves | Qué elegir |
+   |---|---|
+   | ✅ **"Sign in with Claude"** o **"Use Claude subscription"** | ELIGE ESTA |
+   | ❌ "Use API key" | NO uses esta — te llevará a comprar créditos en consola |
+   | ❌ "Use Anthropic Console" | NO uses esta — mismo problema |
+
+6. Se abrirá el navegador automáticamente. Loguéate con la cuenta de **Claude.ai** del paso 5 (la que tiene Pro si lo activaste).
+7. Vuelves a la ventana negra. Ya estás dentro de Claude Code. Verás un cursor parpadeando esperando que escribas algo.
+
+### ⚠️ Si te aparece una pantalla de "Compra créditos de uso"
+
+Significa que has caído en la **Console** (API) en vez de Claude.ai. Esto es lo que tienes que hacer:
+
+1. Cierra esa pantalla de pago.
+2. En la ventana negra de Claude Code, pulsa **Ctrl+C** para salir.
+3. Vuelve a escribir `claude` y dale Enter.
+4. Esta vez, cuando te pregunte cómo autenticarte, elige **"Sign in with Claude"** (NO "API key" ni "Console").
+5. Te llevará a la web normal de claude.ai, no a la consola.
+6. Si después de esto sigue pidiéndote créditos, es porque no tienes suscripción Pro/Max. Suscríbete en https://claude.ai/upgrade ($20/mes) y vuelve a este paso.
 
 ---
 
