@@ -174,6 +174,24 @@ Significa que has caído en la **Console** (API) en vez de Claude.ai. Esto es lo
 5. Te llevará a la web normal de claude.ai, no a la consola.
 6. Si después de esto sigue pidiéndote créditos, es porque no tienes suscripción Pro/Max. Suscríbete en https://claude.ai/upgrade ($20/mes) y vuelve a este paso.
 
+### ⚠️ Si al ejecutar `claude` ya entras directamente sin que te pregunte login
+
+Quiere decir que **ya estás logueado con la cuenta equivocada** (la API/Console de antes). Para cambiar de cuenta:
+
+**Opción 1 (más fácil):** Dentro de Claude Code escribe:
+```
+/logout
+```
+Pulsa Enter. Te confirma que has salido y se cierra. Vuelve a escribir `claude` y esta vez te pregunta cómo autenticarte de nuevo.
+
+**Opción 2 (si /logout no funciona):** Cierra Claude Code (Ctrl+C dos veces) y borra la cache:
+```
+rmdir /s /q "%USERPROFILE%\.claude"
+```
+Confirma con `y` + Enter. Luego ejecuta `claude` otra vez. Empieza de cero.
+
+> Esto solo borra el login local de Claude Code, NO borra nada de tu PC ni de tus proyectos.
+
 ---
 
 ## Paso 7 — El prompt mágico (10-15 minutos, casi todo es esperar)
