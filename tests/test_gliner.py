@@ -176,6 +176,26 @@ def test_classic_engine_message_when_unavailable():
         _reset()
 
 
+def test_no_download_when_disabled():
+    print("\n=== 10) ALLOW_DOWNLOAD=false → modo OFFLINE forzado, sin descargas ===")
+    import importlib
+    importlib.reload(gliner_detector)
+    os.environ.pop("IMPLICA_GLINER_ALLOW_DOWNLOAD", None)  # descarga prohibida (default)
+    for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_HUB_DISABLE_TELEMETRY"):
+        os.environ.pop(k, None)
+    try:
+        gliner_detector._load_model.cache_clear()
+        gliner_detector._load_model()  # intenta cargar (gliner no instalado → None)
+        # Lo clave: ANTES de cualquier intento de carga se fuerza modo offline,
+        # de modo que las libs HF NO pueden contactar la red ni descargar.
+        assert os.environ.get("HF_HUB_OFFLINE") == "1", "Debe forzar HF_HUB_OFFLINE"
+        assert os.environ.get("TRANSFORMERS_OFFLINE") == "1", "Debe forzar TRANSFORMERS_OFFLINE"
+        assert os.environ.get("HF_HUB_DISABLE_TELEMETRY") == "1", "Debe desactivar telemetría"
+        print("  ✓ HF_HUB_OFFLINE=1, TRANSFORMERS_OFFLINE=1, telemetría off → ninguna descarga/red")
+    finally:
+        _reset()
+
+
 def test_real_gliner_if_installed():
     print("\n=== 7) Modelo REAL (se salta si gliner no está instalado) ===")
     try:
@@ -205,5 +225,6 @@ if __name__ == "__main__":
     test_fallback_no_model()
     test_download_disabled_by_default()
     test_classic_engine_message_when_unavailable()
+    test_no_download_when_disabled()
     test_real_gliner_if_installed()
     print("\n✓✓✓ Tests de la capa GLiNER PASS")

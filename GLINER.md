@@ -22,19 +22,32 @@ spaCy + regex + heurísticas + PGC.
 Sin configurar nada: la app funciona igual que siempre (spaCy + regex + heurísticas
 + PGC). GLiNER no se carga, no se importa y **no descarga nada**.
 
-## Licencia (IMPORTANTE para uso comercial)
+## Licencia del modelo (verificada)
 
-| Componente | Licencia |
+### Modelo por defecto
+
+| Campo | Valor |
 |---|---|
-| Librería GLiNER | Apache-2.0 (uso comercial OK) |
-| **Modelo por defecto** `gliner-community/gliner_medium-v2.1` | Apache-2.0 (org. que re-publica para uso comercial), multilingüe |
-| `knowledgator/*` | Apache-2.0 (comercial OK), pero suelen ser **solo inglés** |
-| `urchade/gliner_multi-*` | ⚠️ Suelen ser **CC-BY-NC-4.0 (NO comercial)** → **EVITAR** |
+| **Modelo exacto** | `urchade/gliner_multi-v2.1` |
+| **Licencia exacta** | `apache-2.0` |
+| **Uso comercial** | ✅ Sí (Apache-2.0 lo permite) |
+| **Idioma** | Multilingüe (incluye español) |
+| **Tamaño aprox.** | ~200M parámetros · ~500 MB–1 GB en disco (modelo + tokenizer) |
+| **Fuente de verificación** | API pública de HuggingFace: `https://huggingface.co/api/models/urchade/gliner_multi-v2.1` → `"license":"apache-2.0"`, `"language":["multilingual"]` |
 
-> ⚠️ **Antes de uso comercial, verifica la licencia exacta en la model card de
-> HuggingFace del modelo que vayas a usar.** La licencia de la librería NO es la del
-> modelo. Implica es un despacho comercial → usa solo modelos con licencia que permita
-> uso comercial (Apache-2.0 / MIT).
+### Alternativa también verificada
+
+| Campo | Valor |
+|---|---|
+| **Modelo** | `gliner-community/gliner_medium-v2.5` |
+| **Licencia** | `apache-2.0` (uso comercial ✅), multilingüe |
+| **Fuente** | `https://huggingface.co/api/models/gliner-community/gliner_medium-v2.5` → `"license":"apache-2.0"` |
+
+> ⚠️ La licencia de la **librería** (Apache-2.0) NO es la del **modelo**. Los dos
+> modelos de arriba están verificados Apache-2.0. Si cambias `IMPLICA_GLINER_MODEL`
+> a otro, **verifica su licencia** en `https://huggingface.co/api/models/<modelo>`
+> antes de uso comercial. Evita `urchade/gliner_multi-2.1` (SIN la 'v'): es otro repo
+> cuya licencia no se pudo leer.
 
 ## Descargar el modelo UNA vez (paso manual y explícito)
 
@@ -47,7 +60,7 @@ pip install -r requirements-gliner.txt
 python -m implica_anon.gliner_detector
 
 # Opción B: descarga directa (sin token, modelo público)
-huggingface-cli download gliner-community/gliner_medium-v2.1
+huggingface-cli download urchade/gliner_multi-v2.1
 ```
 
 Tras esto el modelo queda en `~/.cache/huggingface`. A partir de ahí funciona
@@ -67,7 +80,7 @@ streamlit run streamlit_app.py
 Ajustes opcionales:
 ```powershell
 $env:IMPLICA_GLINER_THRESHOLD = "0.5"                              # confianza [0..1]
-$env:IMPLICA_GLINER_MODEL     = "gliner-community/gliner_medium-v2.1"
+$env:IMPLICA_GLINER_MODEL     = "urchade/gliner_multi-v2.1"
 $env:IMPLICA_GLINER_LABELS    = "EMPRESA,FONDO,PERSONA"            # override etiquetas
 ```
 

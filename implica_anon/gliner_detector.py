@@ -58,16 +58,15 @@ GLINER_LABEL_TO_KIND = {
     "BANCO": "BANCO", "GRUPO_EMPRESARIAL": "GRUPO", "DOMINIO_WEB": "DOMINIO",
 }
 
-# Modelo por defecto. IMPORTANTE (licencia): se elige uno de la organización
-# "gliner-community", que re-publica modelos GLiNER bajo Apache-2.0 (uso comercial
-# permitido) y es multilingüe (base mDeBERTa, soporta español).
-#
-# ⚠️ VERIFICAR LICENCIA ANTES DE USO COMERCIAL: confirma en la model card de
-# HuggingFace que la licencia del modelo concreto permite uso comercial.
-#   - gliner-community/*  → Apache-2.0 (comercial OK)  ← recomendado
-#   - knowledgator/*      → Apache-2.0 (comercial OK), pero suelen ser solo inglés
-#   - urchade/gliner_multi-* → OJO: suelen ser CC-BY-NC-4.0 (NO comercial). EVITAR.
-DEFAULT_MODEL = "gliner-community/gliner_medium-v2.1"
+# Modelo por defecto: LICENCIA CONFIRMADA = Apache-2.0 (uso comercial permitido),
+# multilingue (incluye espanol). Verificado via la API publica de HuggingFace:
+#   https://huggingface.co/api/models/urchade/gliner_multi-v2.1  -> "license":"apache-2.0"
+# Alternativa tambien confirmada Apache-2.0 multilingue:
+#   gliner-community/gliner_medium-v2.5
+#   (https://huggingface.co/api/models/gliner-community/gliner_medium-v2.5 -> apache-2.0)
+# OJO: "urchade/gliner_multi-2.1" (SIN la 'v') es OTRO repo cuya licencia no pudo
+# leerse (HTTP 401) -> no usar sin verificar. Configurable con IMPLICA_GLINER_MODEL.
+DEFAULT_MODEL = "urchade/gliner_multi-v2.1"
 
 # Límites de seguridad de rendimiento/memoria
 MAX_CHARS_PER_CHUNK = 3000      # GLiNER pierde precisión con textos muy largos
