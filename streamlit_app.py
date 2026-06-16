@@ -634,6 +634,15 @@ with tab_anon:
         st.session_state["clusters_raw"] = clusters  # para regenerar si cambia modo
         st.success(f"Detectados {len(df)} grupos únicos.")
 
+        # Estado de la capa opcional GLiNER (si está activada)
+        from implica_anon import gliner_detector as _gd
+        if _gd.is_enabled():
+            msg = _gd.status_message()
+            if msg:
+                st.caption(f"🤖 {msg}.")  # p.ej. "GLiNER no disponible, usando motor clásico"
+            else:
+                st.caption("🤖 Capa GLiNER activa (detección de entidades M&A reforzada).")
+
     if "df" in st.session_state and st.session_state.get("proj") == project:
         st.divider()
         st.subheader("Candidatos detectados")

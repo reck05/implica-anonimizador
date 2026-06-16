@@ -148,6 +148,34 @@ def test_fallback_no_model():
         _reset()
 
 
+def test_download_disabled_by_default():
+    print("\n=== 8) Descarga del modelo DESHABILITADA por defecto ===")
+    import importlib
+    os.environ.pop("IMPLICA_GLINER_ALLOW_DOWNLOAD", None)
+    importlib.reload(gliner_detector)
+    assert gliner_detector.allow_download() is False, "Debe estar a false por defecto"
+    print("  ✓ IMPLICA_GLINER_ALLOW_DOWNLOAD por defecto = false (no descarga en producción)")
+
+
+def test_classic_engine_message_when_unavailable():
+    print("\n=== 9) Mensaje 'motor clásico' si el modelo no está disponible ===")
+    import importlib
+    importlib.reload(gliner_detector)
+    os.environ["IMPLICA_ENABLE_GLINER"] = "true"
+    os.environ.pop("IMPLICA_GLINER_ALLOW_DOWNLOAD", None)  # descarga prohibida
+    try:
+        gliner_detector._load_model.cache_clear()
+        model = gliner_detector._load_model()
+        if model is None:
+            assert gliner_detector.status_message() == gliner_detector.STATUS_CLASSIC
+            assert gliner_detector.STATUS_CLASSIC == "GLiNER no disponible, usando motor clásico"
+            print(f"  ✓ status exacto: '{gliner_detector.status_message()}'")
+        else:
+            print("  (modelo ya en caché local; no aplica el mensaje)")
+    finally:
+        _reset()
+
+
 def test_real_gliner_if_installed():
     print("\n=== 7) Modelo REAL (se salta si gliner no está instalado) ===")
     try:
@@ -175,5 +203,7 @@ if __name__ == "__main__":
     test_dedup_vs_existing()
     test_suffixes_persons_domains_emails()
     test_fallback_no_model()
+    test_download_disabled_by_default()
+    test_classic_engine_message_when_unavailable()
     test_real_gliner_if_installed()
     print("\n✓✓✓ Tests de la capa GLiNER PASS")
