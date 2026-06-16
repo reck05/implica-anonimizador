@@ -224,25 +224,31 @@ def normalize_person(name: str) -> str:
     return re.sub(r"\s+", " ", name.lower().strip())
 
 
+# Razón por la que spaCy no está disponible (para avisar en la UI). None = disponible.
+NLP_UNAVAILABLE_REASON: str | None = None
+
+
 @lru_cache(maxsize=1)
 def _load_nlp():
-    """Carga spaCy en español. Cacheado porque es lento.
+    """Carga spaCy en español. Devuelve el modelo, o None si no está disponible.
 
-    Si el modelo no está instalado (típico en Streamlit Cloud la primera vez),
-    lo descarga automáticamente. Solo se hace en el primer uso.
+    NO lanza excepción: si spaCy no está instalado, el modelo no se puede
+    descargar, o el sistema lo bloquea (p.ej. Application Control de Windows),
+    devuelve None y el detector cae a heurísticas regex (`_heuristic_entities`).
+    Así la herramienta funciona aunque spaCy esté bloqueado.
     """
+    global NLP_UNAVAILABLE_REASON
     try:
         import spacy
-    except ImportError as e:
-        raise RuntimeError(
-            "spaCy no está instalado. Ejecuta: pip install spacy"
-        ) from e
+    except Exception as e:  # ImportError, o DLL bloqueado al importar
+        NLP_UNAVAILABLE_REASON = f"spaCy no se pudo importar ({type(e).__name__}). Usando detector heurístico."
+        return None
 
     model_name = "es_core_news_md"
     try:
         return spacy.load(model_name)
     except OSError:
-        # Modelo no instalado — descargar al vuelo (~40MB)
+        # Modelo no instalado — intentar descargar al vuelo (~40MB)
         import subprocess
         import sys
         try:
@@ -252,12 +258,98 @@ def _load_nlp():
                 capture_output=True,
                 timeout=300,
             )
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            raise RuntimeError(
-                f"No se pudo descargar el modelo {model_name}. "
-                "Ejecuta manualmente: python -m spacy download es_core_news_md"
-            ) from e
-        return spacy.load(model_name)
+            return spacy.load(model_name)
+        except Exception as e:
+            NLP_UNAVAILABLE_REASON = (
+                f"No se pudo cargar/descargar el modelo es_core_news_md "
+                f"({type(e).__name__}). Usando detector heurístico."
+            )
+            return None
+    except Exception as e:
+        # Cualquier otro fallo (DLL bloqueado por Application Control, etc.)
+        NLP_UNAVAILABLE_REASON = (
+            f"spaCy no se pudo cargar ({type(e).__name__}). Usando detector heurístico."
+        )
+        return None
+
+
+# --- Detector heurístico de respaldo (sin spaCy) ---
+
+# Empresas: nombre + sufijo societario. Alta precisión.
+HEURISTIC_ORG_RE = re.compile(
+    r"\b([A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ&./\- ]{1,70}?)"
+    r"[,\s]+"
+    r"(S\.?L\.?U\.?|S\.?A\.?U\.?|S\.?L\.?L\.?|S\.?L\.?P\.?|S\.?L\.?|S\.?A\.?|"
+    r"S\.?Coop\.?|S\.?C\.?P\.?|S\.?C\.?|Ltda?\.?|Limited|Inc\.?|Corp\.?|GmbH|AG|BV|NV|PLC)"
+    r"(?=\s|$|[,;:.)\"'\n])",
+    re.UNICODE,
+)
+
+# Empresas en MAYÚSCULAS: 2+ palabras de 3+ letras todas en mayúsculas.
+HEURISTIC_UPPER_RE = re.compile(
+    r"\b([A-ZÁÉÍÓÚÑ]{3,}(?:[ &\-][A-ZÁÉÍÓÚÑ]{2,}){1,5})\b"
+)
+
+
+def _heuristic_entities(texts: Iterable[str]) -> tuple[Counter, Counter]:
+    """Detecta empresas y personas sin spaCy, por reglas.
+
+    Conservador: prioriza precisión (pocos falsos positivos) sobre cobertura,
+    porque el usuario revisa la tabla. Cubre el caso de spaCy bloqueado.
+    """
+    org_counts: Counter[str] = Counter()
+    per_counts: Counter[str] = Counter()
+
+    for text in texts:
+        if not text:
+            continue
+
+        # Empresas con sufijo societario (nombre completo CON sufijo)
+        for m in HEURISTIC_ORG_RE.finditer(text):
+            full = m.group(0).strip().rstrip(",")
+            name_part = m.group(1).strip()
+            if name_part.lower() in GENERIC_STOPWORDS:
+                continue
+            if _looks_like_excel_artifact(full):
+                continue
+            org_counts[full] += 1
+
+        # Empresas en MAYÚSCULAS (sin sufijo): "DISTRIBUCIONES BADIA"
+        for m in HEURISTIC_UPPER_RE.finditer(text):
+            val = m.group(1).strip()
+            if val.lower() in GENERIC_STOPWORDS:
+                continue
+            # Evitar capturar cabeceras tipo "SALDO INICIAL", "TOTAL DEBE"
+            tokens = val.split()
+            if all(t.lower() in GENERIC_STOPWORDS for t in tokens):
+                continue
+            if _looks_like_excel_artifact(val):
+                continue
+            org_counts[val] += 1
+
+        # Personas: nombre común español + 1-2 apellidos capitalizados
+        tokens = text.split()
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i].strip(".,;:()\"'")
+            if tok.lower() in COMMON_GIVEN_NAMES:
+                # recoger apellidos siguientes capitalizados
+                name_parts = [tok]
+                j = i + 1
+                while j < len(tokens) and j < i + 3:
+                    nxt = tokens[j].strip(".,;:()\"'")
+                    if nxt and nxt[0:1].isupper() and nxt.lower() not in GENERIC_STOPWORDS and nxt.isalpha():
+                        name_parts.append(nxt)
+                        j += 1
+                    else:
+                        break
+                if len(name_parts) >= 2:  # nombre + al menos 1 apellido
+                    per_counts[" ".join(name_parts)] += 1
+                i = j
+            else:
+                i += 1
+
+    return org_counts, per_counts
 
 
 def detect_candidates(
@@ -270,11 +362,13 @@ def detect_candidates(
     `skip_ner=True` ejecuta solo regex (CIF/NIF/IBAN/email/teléfono/dirección)
     y omite spaCy. Útil cuando ya tienes el detector PGC dándote las
     empresas/personas con 100% de cobertura y no quieres que spaCy meta ruido.
+
+    Si `skip_ner=False` pero spaCy no está disponible (bloqueado/ausente), cae
+    a un detector heurístico por reglas en vez de spaCy.
     """
-    if not skip_ner:
-        nlp = _load_nlp()
-    else:
-        nlp = None
+    nlp = None if skip_ner else _load_nlp()
+    # Si queremos NER pero spaCy no carga, usamos heurística regex.
+    use_heuristic = (not skip_ner) and (nlp is None)
 
     org_counts: Counter[str] = Counter()
     per_counts: Counter[str] = Counter()
@@ -304,8 +398,8 @@ def detect_candidates(
     for values in structured.values():
         structured_values.update(values)
 
-    if nlp is None:
-        # Modo regex-only: salimos sin pasar por spaCy
+    if skip_ner:
+        # Modo regex-only (PGC ya cubre empresas/personas): salimos sin NER
         candidates: list[Candidate] = []
         for kind, values in structured.items():
             for value in values:
@@ -313,8 +407,20 @@ def detect_candidates(
                 candidates.append(Candidate(text=value, kind=kind, count=count, source="regex"))
         return candidates
 
-    # spaCy para ORG y PER
-    for text in texts:
+    if use_heuristic:
+        # Fallback sin spaCy: detección por reglas
+        h_orgs, h_pers = _heuristic_entities(texts)
+        for value, cnt in h_orgs.items():
+            if value.lower() in GENERIC_STOPWORDS or value in structured_values:
+                continue
+            org_counts[value] += cnt
+        for value, cnt in h_pers.items():
+            if value.lower() in GENERIC_STOPWORDS:
+                continue
+            per_counts[value] += cnt
+
+    # spaCy para ORG y PER (solo si está disponible)
+    for text in (texts if nlp is not None else []):
         if not text or len(text) > 1_000_000:
             continue
         doc = nlp(text)

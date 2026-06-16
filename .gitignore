@@ -19,6 +19,8 @@ build/
 # --- DATOS CONFIDENCIALES — JAMÁS commitear ---
 # Mappings con nombres reales de clientes
 projects/*.json
+projects/*.jsonl
+projects/.backups/
 !projects/.gitkeep
 # Carpetas con documentos del cliente
 input/

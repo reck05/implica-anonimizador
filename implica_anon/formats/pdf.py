@@ -12,16 +12,34 @@ import fitz  # PyMuPDF
 
 from ..replacer import replace_in_text
 
+# Protección de memoria: tope de páginas a procesar de un PDF
+MAX_PDF_PAGES = 1000
+
 
 def extract_text(path: Path) -> list[str]:
     texts: list[str] = []
     with fitz.open(str(path)) as doc:
-        for page in doc:
+        for i, page in enumerate(doc):
+            if i >= MAX_PDF_PAGES:
+                break
             page_text = page.get_text("text")
             if page_text.strip():
                 # Devolver por bloques para que NER tenga contexto, no por línea suelta
                 texts.append(page_text)
     return texts
+
+
+def count_images(path: Path) -> int:
+    """Cuenta imágenes embebidas en el PDF. Útil para avisar de posibles
+    nombres dentro de imágenes que la anonimización de texto no toca."""
+    total = 0
+    try:
+        with fitz.open(str(path)) as doc:
+            for page in doc:
+                total += len(page.get_images(full=True))
+    except Exception:
+        return 0
+    return total
 
 
 def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> None:
@@ -40,7 +58,9 @@ def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> None:
     ordered = sorted(mapping.items(), key=lambda kv: -len(kv[0]))
 
     with fitz.open(str(src)) as doc:
-        for page in doc:
+        for i, page in enumerate(doc):
+            if i >= MAX_PDF_PAGES:
+                break
             # Color blanco (asume fondo blanco — para PDFs con fondo coloreado
             # esto se vería raro pero los teasers M&A suelen ser blancos)
             for original, replacement in ordered:

@@ -73,11 +73,13 @@ def test_verify_pass_excel():
 
     with tempfile.TemporaryDirectory() as tmp:
         dst = Path(tmp) / "out.xlsx"
-        # apply_replacements ahora devuelve la lista de supervivientes
-        surviving = formats.apply_replacements(FIXTURE, pm.all_replacements(), dst)
-        print(f"  Supervivientes reportados: {len(surviving)}")
-        assert surviving == [], f"El verify reportó fugas inesperadas: {surviving[:10]}"
-        print("  ✓ verify pass confirma anonimización limpia en Excel real")
+        # apply_replacements devuelve un VerifyResult
+        result = formats.apply_replacements(FIXTURE, pm.all_replacements(), dst)
+        print(f"  Supervivientes: {len(result.surviving)}, verificable: {result.verifiable}")
+        assert result.surviving == [], f"Fugas inesperadas: {result.surviving[:10]}"
+        assert result.verifiable, "El Excel debería ser verificable (tiene texto)"
+        assert result.is_clean, "Debería estar limpio"
+        print("  ✓ verify pass confirma anonimización limpia y verificable en Excel real")
 
 
 def test_performance():

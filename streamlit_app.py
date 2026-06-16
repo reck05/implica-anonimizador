@@ -11,6 +11,7 @@ import hashlib
 import io
 import os
 import re
+import secrets
 import tempfile
 import zipfile
 from pathlib import Path
@@ -20,6 +21,7 @@ import streamlit as st
 
 from implica_anon import (
     accounting,
+    audit,
     doctype as doctype_mod,
     formats,
     mapping as mapping_mod,
@@ -50,7 +52,11 @@ def _check_password() -> bool:
     st.title("🔒 Implica Anonimizador")
     pwd = st.text_input("Contraseña", type="password", key="pwd_input")
     if st.button("Entrar"):
-        if hashlib.sha256(pwd.encode()).hexdigest() == hashlib.sha256(required.encode()).hexdigest():
+        # compare_digest: comparación de tiempo constante (anti timing-attack)
+        if secrets.compare_digest(
+            hashlib.sha256(pwd.encode()).hexdigest(),
+            hashlib.sha256(required.encode()).hexdigest(),
+        ):
             st.session_state["auth_ok"] = True
             st.rerun()
         else:
@@ -315,6 +321,7 @@ def _clusters_to_df(
                 codename = f"[{c.kind}-{len(seen)+1:03d}]"
 
         seen[norm_key] = {
+            "_rowid": len(seen),  # id único estable para el merge tras editar
             "Anonimizar": True,
             "Tipo": KIND_LABELS.get(c.kind, c.kind),
             "_kind": c.kind,
@@ -361,6 +368,8 @@ def _process_files(uploaded_data, mapping: mapping_mod.ProjectMapping, *, invers
         suffix = project
 
     leaks: dict[str, list[str]] = {}
+    unverifiable: list[str] = []
+    warnings_by_file: dict[str, list[str]] = {}
     zip_buf = io.BytesIO()
     with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -373,13 +382,22 @@ def _process_files(uploaded_data, mapping: mapping_mod.ProjectMapping, *, invers
                 out_name = f"{Path(name).stem}.{suffix}{Path(name).suffix}"
                 dst = tmpdir_path / out_name
                 try:
-                    surviving = formats.apply_replacements(src, replacements, dst)
+                    result = formats.apply_replacements(src, replacements, dst)
                     zf.write(dst, arcname=out_name)
-                    if not inverse and surviving:
-                        leaks[name] = surviving
+                    if not inverse:
+                        if result.surviving:
+                            leaks[name] = result.surviving
+                        if not result.verifiable:
+                            unverifiable.append(name)
+                        if result.warnings:
+                            warnings_by_file[name] = result.warnings
                 except Exception as e:
                     zf.writestr(f"{Path(name).stem}.ERROR.txt", f"ERROR: {e}\n")
-    return zip_buf.getvalue(), leaks
+    return zip_buf.getvalue(), {
+        "leaks": leaks,
+        "unverifiable": unverifiable,
+        "warnings": warnings_by_file,
+    }
 
 
 # =========================
@@ -578,6 +596,7 @@ with tab_anon:
             column_config={
                 "Anonimizar": st.column_config.CheckboxColumn("Anonimizar", default=True, width="small"),
                 "Tipo": st.column_config.TextColumn("Tipo", disabled=True, width="medium"),
+                "_rowid": None,
                 "_kind": None,
                 "_variants": None,
                 "_account_codes": None,
@@ -591,8 +610,9 @@ with tab_anon:
         )
 
         # Merge cambios al df full
-        for i, row in edited.iterrows():
-            full_idx = df_full[df_full["Canónico"] == row["Canónico"]].index
+        for _, row in edited.iterrows():
+            # Merge por _rowid único (no por Canónico, que puede repetirse entre tipos)
+            full_idx = df_full[df_full["_rowid"] == row["_rowid"]].index
             if len(full_idx) > 0:
                 df_full.loc[full_idx[0], "Anonimizar"] = row["Anonimizar"]
                 df_full.loc[full_idx[0], "Codename"] = row["Codename"]
@@ -602,9 +622,13 @@ with tab_anon:
             with st.spinner("Aplicando reemplazos y verificando..."):
                 pm = _df_to_mapping(df_full, project)
                 mapping_mod.save(pm)
-                zip_bytes, leaks = _process_files(st.session_state["upload_data"], pm)
+                zip_bytes, report = _process_files(st.session_state["upload_data"], pm)
 
-            # Verify pass: avisar si algún nombre real sobrevivió en el output
+            leaks = report["leaks"]
+            unverifiable = report["unverifiable"]
+            warnings_by_file = report["warnings"]
+
+            # 1) Fuga de datos: nombres reales que sobrevivieron
             if leaks:
                 st.error("⚠️ **ATENCIÓN: posible fuga de datos.** Estos nombres reales "
                          "siguen apareciendo en el archivo anonimizado. **Revisa antes de "
@@ -612,12 +636,34 @@ with tab_anon:
                 for fname, names in leaks.items():
                     st.markdown(f"- **{fname}**: {', '.join(names[:20])}"
                                 + (f" _(+{len(names)-20} más)_" if len(names) > 20 else ""))
-                st.caption("Causa habitual: el nombre aparece dentro de una imagen, un "
-                           "gráfico, o con un formato que el detector no capturó. "
-                           "Añádelo manualmente y vuelve a procesar.")
-            else:
+                st.caption("Causa habitual: el nombre aparece dentro de una imagen o con un "
+                           "formato que el detector no capturó. Añádelo manualmente y reprocesa.")
+
+            # 2) No verificable: escaneado / sin texto → no dar falso OK
+            if unverifiable:
+                st.warning("🔍 **No se pudo verificar** estos archivos (sin texto legible, "
+                           "posible escaneo): " + ", ".join(f"**{f}**" for f in unverifiable)
+                           + ". Revísalos a mano o pásalos por un OCR antes de compartir.")
+
+            # 3) Avisos (imágenes, etc.)
+            for fname, warns in warnings_by_file.items():
+                for w in warns:
+                    st.caption(f"ℹ️ {fname}: {w}")
+
+            # 4) Todo limpio
+            if not leaks and not unverifiable:
                 st.success(f"✅ Verificado: ningún nombre real sobrevive. "
                            f"{sum(len(v) for v in pm.entries.values())} entradas en el mapping.")
+
+            # Registro de auditoría (metadata agregada, sin PII)
+            audit.log_event(
+                project,
+                "anonymize",
+                files=len(st.session_state["upload_data"]),
+                entities=sum(len(v) for v in pm.entries.values()),
+                leaks=sum(len(v) for v in leaks.values()),
+                unverifiable=len(unverifiable),
+            )
 
             st.download_button(
                 f"⬇️ Descargar {project}_anonimizado.zip",
