@@ -31,6 +31,7 @@ KIND_LABELS = {
     "PERSONA": "Persona/Personal (PGC 46x)",
     "GRUPO": "Empresa grupo (PGC 45x/55x)",
     "BANCO": "Banco (PGC 57x/52x)",
+    "DOMINIO": "Dominio web",
 }
 
 DEFAULT_PLACEHOLDERS = {
@@ -48,6 +49,7 @@ DEFAULT_PLACEHOLDERS = {
     "PERSONA": "[Persona-{:03d}]",
     "GRUPO": "[Grupo-{:03d}]",
     "BANCO": "[Banco-{:03d}]",
+    "DOMINIO": "[Dominio-{:03d}]",
 }
 
 

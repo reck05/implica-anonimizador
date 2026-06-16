@@ -527,7 +527,51 @@ def detect_candidates(
             count = full_text.count(value)
             candidates.append(Candidate(text=value, kind=kind, count=count, source="regex"))
 
+    # Capa OPCIONAL GLiNER (solo en modo NER / texto libre, nunca en PGC).
+    # Desactivada por defecto; añade candidatos nuevos sin tocar el resto.
+    candidates.extend(_gliner_candidates(full_text, candidates))
+
     return candidates
+
+
+def _gliner_candidates(full_text: str, existing: list[Candidate]) -> list[Candidate]:
+    """Augmentación opcional con GLiNER. Devuelve [] si está desactivado o no
+    disponible. Deduplica contra los candidatos ya detectados (spaCy/regex/heurística)
+    y aplica los mismos filtros de ruido. NUNCA rompe el pipeline."""
+    try:
+        from . import gliner_detector
+    except Exception:
+        return []
+    if not gliner_detector.is_enabled():
+        return []
+    try:
+        raw = gliner_detector.detect_gliner_entities(full_text)
+    except Exception:
+        return []
+    if not raw:
+        return []
+
+    existing_norm = {c.text.strip().lower() for c in existing}
+    seen: set = set()
+    out: list[Candidate] = []
+    for text, label, _score in raw:
+        t = text.strip()
+        key = t.lower()
+        if not t or key in existing_norm or key in seen:
+            continue  # dedup vs spaCy/regex y vs sí mismo
+        if key in GENERIC_STOPWORDS or _looks_like_excel_artifact(t):
+            continue  # mismos filtros de ruido que el resto
+        kind = gliner_detector.GLINER_LABEL_TO_KIND.get(label, "ORG")
+        seen.add(key)
+        out.append(
+            Candidate(
+                text=t,
+                kind=kind,
+                count=full_text.count(t) or 1,
+                source=f"gliner:{label}",  # etiqueta fina M&A para trazabilidad
+            )
+        )
+    return out
 
 
 def _maybe_same_entity(a: str, b: str) -> bool:

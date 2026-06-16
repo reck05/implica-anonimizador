@@ -251,13 +251,14 @@ TIPO_TO_KIND = {
     "Teléfono": "PHONE",
     "CIF/NIF": "CIF",
     "IBAN": "IBAN",
+    "Dominio web": "DOMINIO",
 }
 KIND_TO_TIPO = {
     "ORG": "Empresa", "CLIENTE": "Cliente", "PROVEEDOR": "Proveedor",
     "DEUDOR": "Deudor", "GRUPO": "Grupo", "BANCO": "Banco",
     "PER": "Persona", "PERSONA": "Persona", "ADDRESS": "Dirección",
     "EMAIL": "Email", "PHONE": "Teléfono", "CIF": "CIF/NIF", "NIF": "CIF/NIF",
-    "IBAN": "IBAN",
+    "IBAN": "IBAN", "DOMINIO": "Dominio web",
 }
 TIPO_OPCIONES = list(TIPO_TO_KIND.keys())
 
@@ -328,12 +329,17 @@ def _clusters_to_df(
             existing["_account_codes"] = sorted(existing_codes | new_codes)
             continue
 
-        # Buscar codename ya asignado
+        # Buscar codename ya asignado (case-insensitive, para coincidir con el
+        # reemplazo del Replacer que ignora mayúsculas/minúsculas)
         existing_codename = None
         for v in c.variants:
+            v_low = v.lower()
             for kind_entries in pm.entries.values():
-                if v in kind_entries:
-                    existing_codename = kind_entries[v]
+                for orig, cod in kind_entries.items():
+                    if orig.lower() == v_low:
+                        existing_codename = cod
+                        break
+                if existing_codename:
                     break
             if existing_codename:
                 break
