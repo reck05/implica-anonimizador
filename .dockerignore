@@ -1,0 +1,41 @@
+# --- NUNCA meter en la imagen ---
+# Datos reales de cliente
+projects/*.json
+projects/*.jsonl
+projects/.backups/
+input/
+output/
+clientes/
+real/
+
+# Entornos y caches locales
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Secretos
+.env
+.env.local
+.streamlit/secrets.toml
+
+# Git e IDE
+.git/
+.github/
+.vscode/
+.idea/
+
+# Documentos reales (los fixtures sintéticos de tests/ SÍ se incluyen para la demo)
+*.xlsx
+*.docx
+*.pptx
+*.pdf
+*.xlsm
+!tests/fixtures/*
+
+# Binarios de túnel
+cloudflared.exe
+ngrok.exe
