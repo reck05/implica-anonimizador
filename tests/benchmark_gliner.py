@@ -53,12 +53,21 @@ GROUND_TRUTH = {
         "María Fernández", "sonrisadental.es",
     ],
     "excel": [
+        # clientes
         "Distribuciones García S.L.", "Mercadona S.A.", "Supermercados Día",
+        # proveedores
         "Suministros Dentales Ibéricos S.L.", "Material Médico Europa S.A.",
+        # bancos
+        "Banco Santander", "CaixaBank",
+        # empleados (personas)
+        "Laura Gómez Ruiz", "Javier Torres Molina",
+        # sociedades / holding
+        "Inversiones Halcón S.L.", "Patrimonial Ramírez S.A.",
     ],
     "pptx": [
         "Proyecto Halcón", "Salud Capital Partners", "Grupo Ramírez S.L.",
-        "Implica Corporate Finance", "Garrigues", "Alberto Ramírez",
+        "Implica Corporate Finance", "Mediterráneo Capital Partners",  # fondo
+        "Garrigues", "Alberto Ramírez",
     ],
 }
 
@@ -100,13 +109,19 @@ def make_excel() -> Path:
     wb = Workbook()
     ws = wb.active
     ws.title = "Clientes y Proveedores"
-    ws.append(["Tipo", "Nombre", "CIF", "Sector"])
+    ws.append(["Tipo", "Nombre", "CIF / DNI", "Sector / Puesto"])
     rows = [
         ("Cliente", "Distribuciones García S.L.", "B11111111", "Distribución"),
         ("Cliente", "Mercadona S.A.", "A22222222", "Retail"),
         ("Cliente", "Supermercados Día", "A33333333", "Retail"),
         ("Proveedor", "Suministros Dentales Ibéricos S.L.", "B44444444", "Material dental"),
         ("Proveedor", "Material Médico Europa S.A.", "A55555555", "Material médico"),
+        ("Banco", "Banco Santander", "A66666666", "Entidad financiera"),
+        ("Banco", "CaixaBank", "A77777777", "Entidad financiera"),
+        ("Empleado", "Laura Gómez Ruiz", "12345678Z", "Directora comercial"),
+        ("Empleado", "Javier Torres Molina", "87654321X", "Responsable de compras"),
+        ("Sociedad", "Inversiones Halcón S.L.", "B88888888", "Holding"),
+        ("Sociedad", "Patrimonial Ramírez S.A.", "A99999999", "Patrimonial"),
     ]
     for r in rows:
         ws.append(r)
@@ -123,6 +138,7 @@ def make_pptx() -> Path:
         ("Proyecto Halcón", "Resumen de la operación — Confidencial"),
         ("Partes de la operación",
          "Vendedor: Grupo Ramírez S.L.\nComprador: Salud Capital Partners\n"
+         "Fondo coinversor: Mediterráneo Capital Partners\n"
          "Asesor financiero: Implica Corporate Finance\nDespacho legal: Garrigues"),
         ("Dirección", "CEO y fundador: Alberto Ramírez\nLa familia controla el 100% del capital."),
     ]
