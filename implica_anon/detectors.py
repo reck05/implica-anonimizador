@@ -442,7 +442,6 @@ def cluster_variants(
     """
     structured_kinds = {"CIF", "NIF", "IBAN", "EMAIL", "PHONE", "ADDRESS"}
     org_like_kinds = {"ORG", "CLIENTE", "PROVEEDOR", "DEUDOR", "GRUPO", "BANCO"}
-    per_like_kinds = {"PER", "PERSONA"}
 
     by_kind: dict[str, list[Candidate]] = defaultdict(list)
     for c in candidates:

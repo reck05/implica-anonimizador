@@ -345,7 +345,13 @@ def _df_to_mapping(df: pd.DataFrame, project: str) -> mapping_mod.ProjectMapping
     return pm
 
 
-def _process_files(uploaded_data, mapping: mapping_mod.ProjectMapping, *, inverse=False) -> bytes:
+def _process_files(uploaded_data, mapping: mapping_mod.ProjectMapping, *, inverse=False):
+    """Procesa los archivos y devuelve (zip_bytes, leaks).
+
+    `leaks` es un dict {archivo: [originales que sobrevivieron]} — vacío si la
+    anonimización fue limpia. En modo inverse (rehydrate) no se verifica fuga
+    porque ahí el objetivo es justamente devolver los nombres reales.
+    """
     project = mapping.project.lower()
     if inverse:
         replacements = rehydrate_mod.invert_mapping(mapping)
@@ -354,6 +360,7 @@ def _process_files(uploaded_data, mapping: mapping_mod.ProjectMapping, *, invers
         replacements = mapping.all_replacements()
         suffix = project
 
+    leaks: dict[str, list[str]] = {}
     zip_buf = io.BytesIO()
     with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -366,11 +373,13 @@ def _process_files(uploaded_data, mapping: mapping_mod.ProjectMapping, *, invers
                 out_name = f"{Path(name).stem}.{suffix}{Path(name).suffix}"
                 dst = tmpdir_path / out_name
                 try:
-                    formats.apply_replacements(src, replacements, dst)
+                    surviving = formats.apply_replacements(src, replacements, dst)
                     zf.write(dst, arcname=out_name)
+                    if not inverse and surviving:
+                        leaks[name] = surviving
                 except Exception as e:
                     zf.writestr(f"{Path(name).stem}.ERROR.txt", f"ERROR: {e}\n")
-    return zip_buf.getvalue()
+    return zip_buf.getvalue(), leaks
 
 
 # =========================
@@ -590,12 +599,26 @@ with tab_anon:
         st.session_state["df"] = df_full
 
         if st.button("✅ Anonimizar y descargar", type="primary"):
-            with st.spinner("Aplicando reemplazos..."):
+            with st.spinner("Aplicando reemplazos y verificando..."):
                 pm = _df_to_mapping(df_full, project)
                 mapping_mod.save(pm)
-                zip_bytes = _process_files(st.session_state["upload_data"], pm)
+                zip_bytes, leaks = _process_files(st.session_state["upload_data"], pm)
 
-            st.success(f"Listo. {sum(len(v) for v in pm.entries.values())} entradas en el mapping.")
+            # Verify pass: avisar si algún nombre real sobrevivió en el output
+            if leaks:
+                st.error("⚠️ **ATENCIÓN: posible fuga de datos.** Estos nombres reales "
+                         "siguen apareciendo en el archivo anonimizado. **Revisa antes de "
+                         "compartirlo:**")
+                for fname, names in leaks.items():
+                    st.markdown(f"- **{fname}**: {', '.join(names[:20])}"
+                                + (f" _(+{len(names)-20} más)_" if len(names) > 20 else ""))
+                st.caption("Causa habitual: el nombre aparece dentro de una imagen, un "
+                           "gráfico, o con un formato que el detector no capturó. "
+                           "Añádelo manualmente y vuelve a procesar.")
+            else:
+                st.success(f"✅ Verificado: ningún nombre real sobrevive. "
+                           f"{sum(len(v) for v in pm.entries.values())} entradas en el mapping.")
+
             st.download_button(
                 f"⬇️ Descargar {project}_anonimizado.zip",
                 data=zip_bytes,
@@ -648,7 +671,7 @@ with tab_rehydrate:
         if rh_files and st.button("↩️ Rehidratar", type="primary"):
             with st.spinner("Rehidratando..."):
                 upload_data = [(f.name, f.getvalue()) for f in rh_files]
-                zip_bytes = _process_files(upload_data, pm, inverse=True)
+                zip_bytes, _ = _process_files(upload_data, pm, inverse=True)
             st.success("Listo.")
             st.warning("⚠️ Contienen nombres reales.")
             st.download_button(

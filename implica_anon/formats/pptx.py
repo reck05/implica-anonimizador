@@ -9,7 +9,7 @@ from pathlib import Path
 
 from pptx import Presentation
 
-from ..replacer import replace_in_text
+from ..replacer import Replacer
 
 
 def _iter_text_frames(shape):
@@ -25,18 +25,18 @@ def _iter_text_frames(shape):
             yield from _iter_text_frames(sub)
 
 
-def _replace_in_text_frame(tf, mapping: dict[str, str]) -> int:
+def _replace_in_text_frame(tf, replacer: Replacer) -> int:
     total = 0
     for paragraph in tf.paragraphs:
         full = "".join(r.text for r in paragraph.runs)
-        new, n = replace_in_text(full, mapping)
+        new, n = replacer.apply(full)
         if n == 0:
             continue
         total += n
         # Intento por run
         runs_changed = 0
         for run in paragraph.runs:
-            run_new, run_n = replace_in_text(run.text, mapping)
+            run_new, run_n = replacer.apply(run.text)
             if run_n > 0:
                 run.text = run_new
                 runs_changed += run_n
@@ -67,11 +67,12 @@ def extract_text(path: Path) -> list[str]:
 
 
 def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> None:
+    replacer = Replacer(mapping)
     prs = Presentation(str(src))
     for slide in prs.slides:
         for shape in slide.shapes:
             for tf in _iter_text_frames(shape):
-                _replace_in_text_frame(tf, mapping)
+                _replace_in_text_frame(tf, replacer)
         if slide.has_notes_slide:
-            _replace_in_text_frame(slide.notes_slide.notes_text_frame, mapping)
+            _replace_in_text_frame(slide.notes_slide.notes_text_frame, replacer)
     prs.save(str(dst))

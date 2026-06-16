@@ -12,7 +12,7 @@ from docx.document import Document as _Document
 from docx.table import _Cell, Table
 from docx.text.paragraph import Paragraph
 
-from ..replacer import replace_in_text
+from ..replacer import Replacer
 
 
 def _iter_paragraphs(parent) -> list[Paragraph]:
@@ -33,21 +33,21 @@ def _iter_paragraphs(parent) -> list[Paragraph]:
     return paragraphs
 
 
-def _replace_in_paragraph(paragraph: Paragraph, mapping: dict[str, str]) -> int:
+def _replace_in_paragraph(paragraph: Paragraph, replacer: Replacer) -> int:
     """Reemplaza en runs preservando formato.
 
     Si la entidad cruza varios runs, hace fallback a unificar runs del párrafo
     (pierde formato dentro del párrafo pero solo cuando es necesario).
     """
     full_text = paragraph.text
-    new_text, n = replace_in_text(full_text, mapping)
+    new_text, n = replacer.apply(full_text)
     if n == 0:
         return 0
 
     # Intento 1: reemplazar dentro de cada run si encaja
     runs_changed = 0
     for run in paragraph.runs:
-        run_new, run_n = replace_in_text(run.text, mapping)
+        run_new, run_n = replacer.apply(run.text)
         if run_n > 0:
             run.text = run_new
             runs_changed += run_n
@@ -80,16 +80,17 @@ def extract_text(path: Path) -> list[str]:
 
 
 def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> None:
+    replacer = Replacer(mapping)
     doc = Document(str(src))
     for p in _iter_paragraphs(doc):
-        _replace_in_paragraph(p, mapping)
+        _replace_in_paragraph(p, replacer)
     for section in doc.sections:
         for hf in (section.header, section.footer):
             for p in hf.paragraphs:
-                _replace_in_paragraph(p, mapping)
+                _replace_in_paragraph(p, replacer)
             for table in hf.tables:
                 for row in table.rows:
                     for cell in row.cells:
                         for p in cell.paragraphs:
-                            _replace_in_paragraph(p, mapping)
+                            _replace_in_paragraph(p, replacer)
     doc.save(str(dst))

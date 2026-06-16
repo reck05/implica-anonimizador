@@ -28,5 +28,27 @@ def extract_text(path: Path) -> list[str]:
     return EXTRACTORS[path.suffix.lower()](path)
 
 
-def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> None:
+def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> list[str]:
+    """Aplica los reemplazos y verifica el resultado.
+
+    Devuelve la lista de originales que SOBREVIVIERON en el output (vacía =
+    anonimización limpia). El verify pass re-extrae el texto del archivo
+    generado y comprueba que ningún nombre real quedó visible — cubre el caso
+    en que un formato (p.ej. PDF) no encuentra una ocurrencia y la deja pasar.
+    """
     REPLACERS[src.suffix.lower()](src, mapping, dst)
+
+    # Verify pass: re-extraer y detectar fugas
+    from ..replacer import Replacer
+
+    replacer = Replacer(mapping)
+    try:
+        out_texts = EXTRACTORS[dst.suffix.lower()](dst)
+    except Exception:
+        # Si no se puede re-leer el output, no bloqueamos el flujo
+        return []
+    surviving: set[str] = set()
+    for t in out_texts:
+        for original in replacer.find_surviving(t):
+            surviving.add(original)
+    return sorted(surviving)

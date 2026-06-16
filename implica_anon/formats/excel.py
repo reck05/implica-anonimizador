@@ -10,7 +10,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from ..replacer import replace_in_text
+from ..replacer import Replacer, replace_in_text
 
 
 def _looks_like_formula_or_ref(text: str) -> bool:
@@ -100,10 +100,12 @@ def extract_text(path: Path) -> list[str]:
 
 
 def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> None:
+    # Compilar el patrón UNA vez y reutilizarlo en todas las celdas.
+    replacer = Replacer(mapping)
     wb = load_workbook(filename=str(src), data_only=False)
     try:
         for ws in wb.worksheets:
-            new_title, _ = replace_in_text(ws.title, mapping)
+            new_title, _ = replacer.apply(ws.title)
             if new_title != ws.title:
                 # Excel limita a 31 chars el nombre de hoja
                 ws.title = new_title[:31]
@@ -111,7 +113,7 @@ def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> None:
             for row in ws.iter_rows():
                 for cell in row:
                     if isinstance(cell.value, str) and cell.value:
-                        new_val, n = replace_in_text(cell.value, mapping)
+                        new_val, n = replacer.apply(cell.value)
                         if n > 0:
                             cell.value = new_val
 
@@ -123,7 +125,7 @@ def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> None:
                 for part in ("left", "center", "right"):
                     section = getattr(hf, part, None)
                     if section and getattr(section, "text", None):
-                        new_text, n = replace_in_text(section.text, mapping)
+                        new_text, n = replacer.apply(section.text)
                         if n > 0:
                             section.text = new_text
 

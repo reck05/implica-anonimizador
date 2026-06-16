@@ -46,11 +46,19 @@ def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> None:
             for original, replacement in ordered:
                 if not original:
                     continue
-                # search_for es case-sensitive en PyMuPDF; buscamos también lower
-                rects = list(page.search_for(original))
-                # Probar variante en lowercase si no encontramos nada
-                if not rects:
-                    rects = list(page.search_for(original.lower()))
+                # search_for de PyMuPDF distingue mayúsculas. Probamos varias
+                # variantes de caso para no dejar el nombre visible. El verify
+                # pass en formats/__init__ re-escanea el output y avisa de
+                # cualquier ocurrencia que aun así se escape.
+                rects = []
+                seen_variants = set()
+                for variant in (original, original.lower(), original.upper(), original.title()):
+                    if variant in seen_variants:
+                        continue
+                    seen_variants.add(variant)
+                    found = list(page.search_for(variant))
+                    if found:
+                        rects.extend(found)
                 for rect in rects:
                     # Inflar levemente para asegurar cobertura
                     annot = page.add_redact_annot(
