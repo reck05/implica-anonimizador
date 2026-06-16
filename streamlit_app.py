@@ -236,6 +236,31 @@ PGC_KIND_LABELS_SHORT = {
     "BANCO": "Banco",
 }
 
+# Mapeo Tipo (etiqueta corta editable en la tabla) ↔ kind interno.
+# Permite reclasificar en la tabla: "esto no es Empresa, es Cliente".
+TIPO_TO_KIND = {
+    "Empresa": "ORG",
+    "Cliente": "CLIENTE",
+    "Proveedor": "PROVEEDOR",
+    "Deudor": "DEUDOR",
+    "Grupo": "GRUPO",
+    "Banco": "BANCO",
+    "Persona": "PER",
+    "Dirección": "ADDRESS",
+    "Email": "EMAIL",
+    "Teléfono": "PHONE",
+    "CIF/NIF": "CIF",
+    "IBAN": "IBAN",
+}
+KIND_TO_TIPO = {
+    "ORG": "Empresa", "CLIENTE": "Cliente", "PROVEEDOR": "Proveedor",
+    "DEUDOR": "Deudor", "GRUPO": "Grupo", "BANCO": "Banco",
+    "PER": "Persona", "PERSONA": "Persona", "ADDRESS": "Dirección",
+    "EMAIL": "Email", "PHONE": "Teléfono", "CIF": "CIF/NIF", "NIF": "CIF/NIF",
+    "IBAN": "IBAN",
+}
+TIPO_OPCIONES = list(TIPO_TO_KIND.keys())
+
 
 def _codename_from_account_code(kind: str, account_code: str, mode: str) -> str:
     """Genera el codename a partir del código de cuenta PGC.
@@ -339,7 +364,7 @@ def _clusters_to_df(
         seen[norm_key] = {
             "_rowid": len(seen),  # id único estable para el merge tras editar
             "Anonimizar": True,
-            "Tipo": KIND_LABELS.get(c.kind, c.kind),
+            "Tipo": KIND_TO_TIPO.get(c.kind, "Empresa"),  # etiqueta corta editable
             "_kind": c.kind,
             "Canónico": c.canonical,
             "_variants": list(c.variants),
@@ -353,6 +378,47 @@ def _clusters_to_df(
     rows = list(seen.values())
     rows.sort(key=lambda r: (-r["Ocurrencias"], r["Canónico"]))
     return pd.DataFrame(rows)
+
+
+def _render_merge_suggestions(df_full, project: str) -> None:
+    """Muestra grupos de candidatos que PODRÍAN ser la misma entidad y permite
+    unificarlos (darles el mismo codename) con un botón. Cubre el caso
+    'Mercadona' / 'Mercad' / 'Merca' que el clustering estricto no une solo."""
+    from implica_anon.detectors import suggest_unifications
+
+    entries = [
+        (int(r["_rowid"]), r["_kind"], r["Canónico"])
+        for _, r in df_full.iterrows()
+    ]
+    groups = suggest_unifications(entries)
+    if not groups:
+        return
+
+    rowid_to_row = {int(r["_rowid"]): r for _, r in df_full.iterrows()}
+    with st.expander(f"💡 {len(groups)} posible(s) duplicado(s) — ¿unificar?", expanded=True):
+        st.caption(
+            "Nombres parecidos que podrían ser la misma empresa. Si lo son, "
+            "pulsa **Unificar** para que compartan codename. Si no, ignóralo."
+        )
+        for gi, group in enumerate(groups):
+            members = [rowid_to_row[rid] for rid in group if rid in rowid_to_row]
+            if len(members) < 2:
+                continue
+            names = [m["Canónico"] for m in members]
+            best = max(members, key=lambda m: m["Ocurrencias"])
+            best_codename = best["Codename"]
+            cols = st.columns([5, 1])
+            cols[0].markdown(
+                "• " + "   ·   ".join(f"**{n}**" for n in names)
+                + f"  →  `{best_codename}`"
+            )
+            if cols[1].button("Unificar", key=f"merge_{gi}_{best['_rowid']}"):
+                for rid in group:
+                    idx = df_full[df_full["_rowid"] == rid].index
+                    if len(idx) > 0:
+                        df_full.loc[idx[0], "Codename"] = best_codename
+                st.session_state["df"] = df_full
+                st.rerun()
 
 
 def _df_to_mapping(df: pd.DataFrame, project: str) -> mapping_mod.ProjectMapping:
@@ -592,26 +658,45 @@ with tab_anon:
                     st.session_state["codename_mode_used"] = new_mode
 
         st.caption(
-            "🔍 Cada fila = una entidad única (variantes ya agrupadas). "
-            "Desmarca **Anonimizar** para falsos positivos. Edita **Codename** si quieres cambiarlo."
-        )
-
-        # Filtro por tipo
-        all_types = sorted(set(st.session_state["df"]["Tipo"].tolist()))
-        selected_types = st.multiselect(
-            "Mostrar solo tipos:",
-            all_types,
-            default=all_types,
-            key="type_filter",
+            "🔍 Cada fila = una entidad única. Puedes editar 3 columnas: **Anonimizar** (sí/no), "
+            "**Tipo** (si detectó mal: Empresa→Cliente, etc.) y **Codename**. "
+            "Navega con flechas y marca con **Espacio**; **Tab** salta entre celdas."
         )
         df_full = st.session_state["df"]
+
+        # --- Sugerencias de unificación (Mercadona / Mercad / Merca → la misma) ---
+        _render_merge_suggestions(df_full, project)
+
+        # --- Selección masiva con botones (alternativa al clic uno a uno) ---
+        cols_sel = st.columns(4)
+        if cols_sel[0].button("☑️ Marcar todas"):
+            df_full["Anonimizar"] = True
+            st.session_state["df"] = df_full
+            st.rerun()
+        if cols_sel[1].button("⬜ Desmarcar todas"):
+            df_full["Anonimizar"] = False
+            st.session_state["df"] = df_full
+            st.rerun()
+        if cols_sel[2].button("🔄 Invertir"):
+            df_full["Anonimizar"] = ~df_full["Anonimizar"].astype(bool)
+            st.session_state["df"] = df_full
+            st.rerun()
+
+        # Filtro por tipo (para revisar por categorías)
+        all_types = sorted(set(df_full["Tipo"].tolist()))
+        selected_types = cols_sel[3].multiselect(
+            "Ver solo:", all_types, default=all_types, key="type_filter",
+        )
         df_filtered = df_full[df_full["Tipo"].isin(selected_types)].reset_index(drop=True)
 
         edited = st.data_editor(
             df_filtered,
             column_config={
                 "Anonimizar": st.column_config.CheckboxColumn("Anonimizar", default=True, width="small"),
-                "Tipo": st.column_config.TextColumn("Tipo", disabled=True, width="medium"),
+                "Tipo": st.column_config.SelectboxColumn(
+                    "Tipo", options=TIPO_OPCIONES, width="small", required=True,
+                    help="Cambia si se detectó mal (p.ej. era Cliente y puso Empresa).",
+                ),
                 "_rowid": None,
                 "_kind": None,
                 "_variants": None,
@@ -625,13 +710,16 @@ with tab_anon:
             hide_index=True, use_container_width=True, num_rows="fixed", key="editor",
         )
 
-        # Merge cambios al df full
+        # Merge cambios al df full (Anonimizar, Tipo y Codename son editables)
         for _, row in edited.iterrows():
-            # Merge por _rowid único (no por Canónico, que puede repetirse entre tipos)
             full_idx = df_full[df_full["_rowid"] == row["_rowid"]].index
             if len(full_idx) > 0:
                 df_full.loc[full_idx[0], "Anonimizar"] = row["Anonimizar"]
                 df_full.loc[full_idx[0], "Codename"] = row["Codename"]
+                # Si cambió el Tipo, actualizar también el kind interno
+                if row["Tipo"] != df_full.loc[full_idx[0], "Tipo"]:
+                    df_full.loc[full_idx[0], "Tipo"] = row["Tipo"]
+                    df_full.loc[full_idx[0], "_kind"] = TIPO_TO_KIND.get(row["Tipo"], "ORG")
         st.session_state["df"] = df_full
 
         if st.button("✅ Anonimizar y descargar", type="primary"):

@@ -530,6 +530,52 @@ def detect_candidates(
     return candidates
 
 
+def _maybe_same_entity(a: str, b: str) -> bool:
+    """Heurística para SUGERIR (no decidir) que dos nombres son la misma entidad.
+
+    Más laxa que el clustering automático (umbral 90): captura la zona gris
+    (similitud media o abreviaturas tipo 'Mercad' → 'Mercadona') para que el
+    humano confirme. NO se aplica automáticamente — solo genera sugerencias.
+    """
+    na, nb = normalize_org(a), normalize_org(b)
+    if not na or not nb or na == nb:
+        return False
+    score = fuzz.token_set_ratio(na, nb)
+    if 72 <= score < 92:
+        return True
+    # Abreviatura/prefijo: "mercad" es prefijo de "mercadona" (mín. 4 chars)
+    ca, cb = na.replace(" ", ""), nb.replace(" ", "")
+    short, lng = sorted([ca, cb], key=len)
+    if len(short) >= 4 and lng.startswith(short):
+        return True
+    return False
+
+
+def suggest_unifications(entries: list[tuple]) -> list[list]:
+    """Agrupa candidatos que PODRÍAN ser la misma entidad (para sugerir al usuario).
+
+    `entries`: lista de (id, kind, nombre). Devuelve grupos [[id, id, ...]] con
+    2+ miembros del mismo kind que parecen la misma empresa pero que el
+    clustering automático no unió. El usuario decide si unificarlos.
+    """
+    groups: list[list] = []
+    used: set = set()
+    for i, (id_a, kind_a, name_a) in enumerate(entries):
+        if id_a in used:
+            continue
+        group = [id_a]
+        for j in range(i + 1, len(entries)):
+            id_b, kind_b, name_b = entries[j]
+            if id_b in used or kind_b != kind_a:
+                continue
+            if _maybe_same_entity(name_a, name_b):
+                group.append(id_b)
+        if len(group) > 1:
+            groups.append(group)
+            used.update(group)
+    return groups
+
+
 def candidates_from_pgc(scan_result) -> list[Candidate]:
     """Convierte un AccountingScanResult en candidatos directamente.
 
