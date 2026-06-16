@@ -125,15 +125,49 @@ FORMULA_PATTERNS = [
     re.compile(r"^Agregado!", re.IGNORECASE),
 ]
 
+# Referencias documentales (facturas, albaranes, pedidos...). NO son nombres de empresa.
+# El nombre de la empresa es lo que se anonimiza; el número de factura NO.
+DOC_PREFIXES = frozenset([
+    "factura", "facturas", "fact", "fac", "fra", "fras",
+    "albaran", "albarán", "albaranes", "pedido", "pedidos",
+    "presupuesto", "presupuestos", "ticket", "recibo", "recibos", "abono",
+    "ref", "referencia", "asiento", "apunte", "documento", "nº", "núm", "num", "n.º",
+])
+# Código tipo factura: "FAC-PRE25-00761", "ALB/2025-001", "PRE25-04761"
+DOC_CODE_RE = re.compile(r"[A-Za-z]{2,}[-/][A-Za-z0-9]*\d{2,}")
+# 5+ dígitos seguidos = número de documento/referencia (las empresas con año tienen 4)
+MANY_DIGITS_RE = re.compile(r"\d{5,}")
+
+
+def _is_document_ref(text: str) -> bool:
+    """True si el texto es una referencia de factura/albarán/pedido, no un nombre."""
+    s = text.strip()
+    if not s:
+        return False
+    tokens = s.split()
+    if tokens:
+        first = tokens[0].lower().strip(".:#-º")
+        if first in DOC_PREFIXES:
+            return True
+    if DOC_CODE_RE.search(s):
+        return True
+    if MANY_DIGITS_RE.search(s):
+        return True
+    return False
+
 
 def _looks_like_excel_artifact(text: str) -> bool:
-    """True si el texto huele a artefacto de Excel (fórmula, referencia, fragmento)."""
+    """True si el texto huele a artefacto de Excel (fórmula, referencia, fragmento)
+    o a referencia documental (factura, albarán...)."""
     if not text or len(text) < 2:
         return True
     s = text.strip()
     for pat in FORMULA_PATTERNS:
         if pat.search(s):
             return True
+    # Referencias documentales (facturas, albaranes, pedidos): no son empresas
+    if _is_document_ref(s):
+        return True
     # Strings cortos de 1-3 chars en mayúsculas con dígitos = referencia rota
     if re.fullmatch(r"[A-Z]{1,3}\d{1,4}", s):
         return True

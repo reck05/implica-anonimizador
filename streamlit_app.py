@@ -281,6 +281,15 @@ def _clusters_to_df(
     }
     pgc_kinds = set(PGC_KIND_LABELS_SHORT.keys())
 
+    # La empresa PRINCIPAL (target/mandante) usa el codename del proyecto; el resto
+    # de empresas son entidades distintas → [Empresa-NNN]. Como los clusters vienen
+    # ordenados por frecuencia, la 1ª ORG nueva es la más probable principal.
+    project_codename = project.capitalize()
+    org_empresa_counter = 0
+    principal_org_asignada = any(
+        cn == project_codename for cn in pm.entries.get("ORG", {}).values()
+    )
+
     for c in clusters:
         norm_key = (c.kind, c.canonical.strip().lower())
         if norm_key in seen:
@@ -312,11 +321,18 @@ def _clusters_to_df(
             codename = _codename_from_account_code(c.kind, c.account_codes[0], mode_str)
         else:
             template = DEFAULT_PLACEHOLDERS.get(c.kind)
-            if template:
+            if c.kind == "ORG":
+                # Primera empresa por frecuencia = principal (codename del proyecto).
+                # Las demás son empresas distintas → [Empresa-NNN].
+                if not principal_org_asignada:
+                    codename = project_codename
+                    principal_org_asignada = True
+                else:
+                    org_empresa_counter += 1
+                    codename = f"[Empresa-{org_empresa_counter:03d}]"
+            elif template:
                 counters_by_kind[c.kind] = counters_by_kind.get(c.kind, 0) + 1
                 codename = template.format(counters_by_kind[c.kind])
-            elif c.kind == "ORG":
-                codename = project.capitalize()
             else:
                 codename = f"[{c.kind}-{len(seen)+1:03d}]"
 
