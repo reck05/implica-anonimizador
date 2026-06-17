@@ -868,10 +868,15 @@ with tab_anon:
             })
 
         if st.button("✅ Anonimizar y descargar", type="primary"):
-            with st.spinner("Aplicando reemplazos y verificando..."):
-                pm = _df_to_mapping(df_full, project)
-                mapping_mod.save(pm)
-                zip_bytes, report = _process_files(st.session_state["upload_data"], pm)
+            try:
+                with st.spinner("Aplicando reemplazos y verificando..."):
+                    pm = _df_to_mapping(df_full, project)
+                    mapping_mod.save(pm)
+                    zip_bytes, report = _process_files(st.session_state["upload_data"], pm)
+            except Exception as e:
+                st.error(f"No se pudo generar el archivo anonimizado: {type(e).__name__}: {e}. "
+                         "Tu análisis sigue guardado — no tienes que repetirlo.")
+                st.stop()
 
             leaks = report["leaks"]
             unverifiable = report["unverifiable"]
