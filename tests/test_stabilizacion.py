@@ -536,6 +536,48 @@ def c11_checksum_identificadores():
           any(c.kind == "CIF" for c in cands3))
 
 
+def c12_presidio_opcional():
+    """Iter 10 fase 2: capa opcional Presidio (MIT, local). Off por defecto;
+    al activarla aporta spans de PERSONA completos en texto narrativo."""
+    print("\n=== C12. Capa opcional Presidio ===")
+    import os as _os
+    from implica_anon import presidio_detector as _pd
+
+    # Off por defecto: sin la variable de entorno, no se activa
+    _os.environ.pop("IMPLICA_ENABLE_PRESIDIO", None)
+    check("Presidio OFF por defecto (no se activa sin la variable)", not _pd.is_enabled())
+
+    # Importable sin romper aunque no esté el paquete (degradación elegante)
+    check("módulo presidio_detector importa y no rompe el arranque", True)
+
+    try:
+        import presidio_analyzer  # noqa
+        have = True
+    except Exception:
+        have = False
+    if not have:
+        check("Presidio no instalado → se omite (motor clásico)", True)
+        return
+
+    # Activado: detecta PERSONA con span completo en narrativo
+    _os.environ["IMPLICA_ENABLE_PRESIDIO"] = "true"
+    try:
+        _pd._load_analyzer.cache_clear()
+        ents = _pd.detect_presidio_entities(
+            "El administrador Carlos García Pérez firmó el acuerdo por la sociedad."
+        )
+        persons = [t for (t, lab, sc) in ents if lab == "PERSON"]
+        full = any("Carlos García Pérez" in p or p in "Carlos García Pérez" and len(p) >= len("Carlos García") for p in persons)
+        check("Presidio activo detecta PERSONA con span completo", full,
+              f"personas={persons}")
+    finally:
+        _os.environ.pop("IMPLICA_ENABLE_PRESIDIO", None)
+        try:
+            _pd._load_analyzer.cache_clear()
+        except Exception:
+            pass
+
+
 def print_report():
     print("\n" + "=" * 70)
     print("MÉTRICAS")
@@ -572,5 +614,6 @@ if __name__ == "__main__":
     c9_contexto_y_confidencialidad()
     c10_robustez_formatos()
     c11_checksum_identificadores()
+    c12_presidio_opcional()
     all_ok = print_report()
     sys.exit(0 if all_ok else 1)

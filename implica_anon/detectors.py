@@ -615,11 +615,46 @@ def detect_candidates(
             count = full_text.count(value)
             candidates.append(Candidate(text=value, kind=kind, count=count, source="regex"))
 
-    # Capa OPCIONAL GLiNER (solo en modo NER / texto libre, nunca en PGC).
-    # Desactivada por defecto; añade candidatos nuevos sin tocar el resto.
+    # Capas OPCIONALES (solo en modo NER / texto libre, nunca en PGC). Desactivadas
+    # por defecto; añaden candidatos nuevos sin tocar el resto.
     candidates.extend(_gliner_candidates(full_text, candidates))
+    candidates.extend(_presidio_candidates(full_text, candidates))
 
     return candidates
+
+
+def _presidio_candidates(full_text: str, existing: list[Candidate]) -> list[Candidate]:
+    """Augmentación opcional con Presidio (PERSON/ORG con spans completos). Devuelve
+    [] si está desactivado o no disponible. Deduplica contra lo ya detectado y aplica
+    los mismos filtros de ruido. NUNCA rompe el pipeline."""
+    try:
+        from . import presidio_detector
+    except Exception:
+        return []
+    if not presidio_detector.is_enabled():
+        return []
+    try:
+        raw = presidio_detector.detect_presidio_entities(full_text)
+    except Exception:
+        return []
+    if not raw:
+        return []
+
+    existing_norm = {c.text.strip().lower() for c in existing}
+    seen: set = set()
+    out: list[Candidate] = []
+    for text, label, _score in raw:
+        t = text.strip(" .,;:\"'()")
+        key = t.lower()
+        if not t or len(t) < 2 or key in existing_norm or key in seen:
+            continue
+        if key in GENERIC_STOPWORDS or _looks_like_excel_artifact(t) or _is_lone_first_name(t):
+            continue
+        kind = presidio_detector.PRESIDIO_LABEL_TO_KIND.get(label, "PER")
+        seen.add(key)
+        out.append(Candidate(text=t, kind=kind, count=full_text.count(t) or 1,
+                             source=f"presidio:{label}"))
+    return out
 
 
 def _gliner_candidates(full_text: str, existing: list[Candidate]) -> list[Candidate]:
