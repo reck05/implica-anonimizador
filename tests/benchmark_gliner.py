@@ -38,8 +38,10 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 ROOT = Path(__file__).resolve().parents[1]
-FIX = Path(__file__).parent / "fixtures" / "benchmark"
-FIX.mkdir(parents=True, exist_ok=True)
+# Carpeta única de salida: fixtures ficticios + informes (html/md/csv/json) juntos.
+OUT = ROOT / "benchmark_outputs"
+OUT.mkdir(parents=True, exist_ok=True)
+FIX = OUT  # los documentos ficticios se generan en la misma carpeta de salida
 
 GROUND_TRUTH = {
     "teaser": [
@@ -290,10 +292,10 @@ SECCION_REQUISITOS = """## 6. Requisitos antes de que lo use el equipo
 
 
 def write_reports(res):
-    md = _build_md(res)
-    (ROOT / "benchmark_resultado.md").write_text(md, encoding="utf-8")
+    (OUT / "benchmark_resultado.md").write_text(_build_md(res), encoding="utf-8")
+    (OUT / "benchmark_resultado.html").write_text(_build_html(res), encoding="utf-8")
 
-    with (ROOT / "benchmark_resultado.csv").open("w", encoding="utf-8", newline="") as f:
+    with (OUT / "benchmark_resultado.csv").open("w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
         w.writerow(["Documento", "Entidades reales", "Aciertos sin GLiNER",
                     "Aciertos con GLiNER", "Nuevas utiles", "FP sin", "FP con",
@@ -306,8 +308,173 @@ def write_reports(res):
         w.writerow(["TOTAL", t["truth"], t["base_hits"], t["gln_hits"], t["new_useful"],
                     t["base_fp"], t["gln_fp"], t["base_t"], t["gln_t"], _overall_reco(res)])
 
-    (ROOT / "benchmark_resultado.json").write_text(
+    (OUT / "benchmark_resultado.json").write_text(
         json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _build_html(res):
+    import html as _h
+    m, t = res["meta"], res["totals"]
+    active = m["gliner_active"]
+    overall = _overall_reco(res)
+
+    def esc(x):
+        return _h.escape(str(x))
+
+    warns = ""
+    if not m["spacy_ok"]:
+        warns += ('<div class="warn">⚠️ spaCy no estaba operativo: el motor clásico cayó a '
+                  'heurísticas. Los números infravaloran el clásico — repite en una máquina '
+                  'con spaCy.</div>')
+    if not active:
+        warns += ('<div class="warn">⚠️ GLiNER no estaba activo: la columna «con GLiNER» = '
+                  'clásico. Repite con <code>IMPLICA_ENABLE_GLINER=true</code> y GLiNER '
+                  'instalado para la comparación real.</div>')
+
+    if not active:
+        resumen = (f"No se ejecutó la comparación real con GLiNER (estaba desactivado). El motor "
+                   f"clásico detectó <b>{t['base_hits']}/{t['truth']}</b> entidades con "
+                   f"<b>{t['base_fp']} falsos positivos</b> en {t['base_t']:.1f}s. Para decidir si "
+                   f"GLiNER aporta hay que repetir con GLiNER instalado. Recomendación: "
+                   f"<b>seguir probando</b>.")
+    else:
+        extra = t["gln_hits"] - t["base_hits"]
+        extra_fp = t["gln_fp"] - t["base_fp"]
+        resumen = (f"Sobre {t['truth']} entidades reales: clásico {t['base_hits']}, con GLiNER "
+                   f"{t['gln_hits']} (<b>{extra:+d}</b> útiles). Falsos positivos "
+                   f"{t['base_fp']}→{t['gln_fp']} (<b>{extra_fp:+d}</b>). Tiempo "
+                   f"{t['base_t']:.1f}s→{t['gln_t']:.1f}s. Recomendación: <b>{esc(overall)}</b>.")
+
+    rows = ""
+    for d in res["docs"]:
+        rows += (f"<tr><td>{esc(d['label'])}</td><td>{d['truth']}</td>"
+                 f"<td>{d['base_hits']}</td><td class='hl'>{d['gln_hits']}</td>"
+                 f"<td>{len(d['new_useful'])}</td><td>{d['base_fp']}</td><td>{d['gln_fp']}</td>"
+                 f"<td>{d['base_t']:.2f}s</td><td>{d['gln_t']:.2f}s</td>"
+                 f"<td>{esc(d['recommendation'])}</td></tr>")
+    rows += (f"<tr class='tot'><td>TOTAL</td><td>{t['truth']}</td><td>{t['base_hits']}</td>"
+             f"<td class='hl'>{t['gln_hits']}</td><td>{t['new_useful']}</td><td>{t['base_fp']}</td>"
+             f"<td>{t['gln_fp']}</td><td>{t['base_t']:.2f}s</td><td>{t['gln_t']:.2f}s</td>"
+             f"<td><b>{esc(overall)}</b></td></tr>")
+
+    def fverdict(doc_key):
+        if not active:
+            return "Pendiente de medir"
+        d = next((x for x in res["docs"] if x["doc"] == doc_key), None)
+        if not d:
+            return "Inferido"
+        g = d["gln_hits"] - d["base_hits"]
+        return f"Sí aporta (+{g})" if g > 0 else "No aporta"
+
+    func_rows = (
+        f"<tr><td>Teasers</td><td>{fverdict('teaser')}</td><td>Medido (texto libre, su punto fuerte)</td></tr>"
+        f"<tr><td>PDFs con texto</td><td>{fverdict('teaser')}</td><td>Misma ruta NER que el teaser</td></tr>"
+        f"<tr><td>PowerPoints</td><td>{fverdict('pptx')}</td><td>Medido</td></tr>"
+        f"<tr><td>Word</td><td>Inferido = igual que teaser</td><td>Misma ruta NER (no medido aparte)</td></tr>"
+        f"<tr><td>Excels CONTABLES (PGC)</td><td>No aplica</td><td>El motor PGC ya es 100%; GLiNER no interviene</td></tr>"
+        f"<tr><td>Excels NO contables</td><td>{fverdict('excel')}</td><td>Medido (listado de nombres)</td></tr>"
+    )
+
+    opts = ["Activar GLiNER para todo", "Activar GLiNER solo para documentos narrativos",
+            "Mantener GLiNER apagado", "Seguir probando"]
+    opts_html = " · ".join(
+        (f"<b class='pill'>{esc(o)}</b>" if o == overall else f"<span class='opt'>{esc(o)}</span>")
+        for o in opts)
+
+    reqs = "".join(f"<li>{esc(x)}</li>" for x in [
+        "spaCy funcionando (es_core_news_md) en el servidor",
+        "GLiNER instalado solo si IT lo aprueba (no por defecto)",
+        "Modelo descargado manualmente una vez; después offline",
+        "Licencia documentada (Apache-2.0 para urchade/gliner_multi-v2.1)",
+        "Pruebas con documentos ficticios (este benchmark)",
+        "Pruebas con documentos anonimizados reales (sin PII)",
+        "Decisión de IT antes de producción",
+        "No activar en Azure todavía (sigue dormido)",
+    ])
+
+    return f"""<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Benchmark GLiNER — Implica</title>
+<style>
+:root{{--teal:#003E51;--teal2:#00BBB4;--lime:#C2D500;--orange:#FF6B00;--ink:#1b2733;--bg:#f4f6f7;}}
+*{{box-sizing:border-box}}
+body{{font-family:'Segoe UI',Helvetica,Arial,sans-serif;margin:0;background:var(--bg);color:var(--ink);line-height:1.5}}
+.wrap{{max-width:980px;margin:0 auto;padding:0 24px 64px}}
+header{{background:var(--teal);color:#fff;padding:32px 24px;border-bottom:5px solid var(--lime)}}
+header .wrap{{padding-bottom:0}}
+h1{{margin:0;font-size:26px}} header .meta{{opacity:.8;font-size:13px;margin-top:6px}}
+h2{{color:var(--teal);border-left:5px solid var(--teal2);padding-left:12px;margin-top:38px}}
+.warn{{background:#fff4e6;border:1px solid var(--orange);color:#8a4b00;padding:10px 14px;border-radius:8px;margin:14px 0;font-size:14px}}
+.card{{background:#fff;border:1px solid #e2e8ea;border-radius:12px;padding:18px 22px;margin-top:14px;box-shadow:0 1px 3px rgba(0,0,0,.04)}}
+table{{width:100%;border-collapse:collapse;margin-top:12px;font-size:14px;background:#fff;border-radius:10px;overflow:hidden}}
+th{{background:var(--teal);color:#fff;text-align:left;padding:10px}}
+td{{padding:9px 10px;border-top:1px solid #eef1f2}}
+tr.tot td{{font-weight:700;background:#eef7f7;border-top:2px solid var(--teal2)}}
+td.hl{{background:rgba(0,187,180,.10);font-weight:600}}
+.reco{{background:var(--teal);color:#fff;padding:18px 22px;border-radius:12px;font-size:18px;margin-top:14px}}
+.reco b.pill,b.pill{{background:var(--lime);color:var(--teal);padding:2px 10px;border-radius:20px}}
+.opt{{opacity:.7;font-size:14px}}
+ul{{line-height:1.9}} code{{background:#eef1f2;padding:1px 5px;border-radius:4px;font-size:13px}}
+footer{{margin-top:40px;font-size:12px;opacity:.6;text-align:center}}
+.rec-A{{border-left:5px solid var(--lime)}}
+</style></head>
+<body>
+<header><div class="wrap"><h1>🔒 Benchmark GLiNER — Implica Anonimizador</h1>
+<div class="meta">Generado: {esc(m['timestamp'])} · Modelo: {esc(m['model'])} · GLiNER activo: {("sí" if active else "no")}</div></div></header>
+<div class="wrap">
+{warns}
+
+<h2>1. Resumen ejecutivo</h2>
+<div class="card">{resumen}</div>
+
+<h2>2. Tabla comparativa</h2>
+<table>
+<tr><th>Documento</th><th>Reales</th><th>Sin GLiNER</th><th>Con GLiNER</th><th>Nuevas útiles</th>
+<th>FP sin</th><th>FP con</th><th>Tiempo sin</th><th>Tiempo con</th><th>Recomendación</th></tr>
+{rows}
+</table>
+
+<h2>3. Conclusión funcional (por tipo de documento)</h2>
+<table>
+<tr><th>Tipo</th><th>¿Merece la pena GLiNER?</th><th>Nota</th></tr>
+{func_rows}
+</table>
+
+<h2>4. Recomendación de activación</h2>
+<div class="reco">➡️ <b class="pill">{esc(overall)}</b></div>
+<p style="margin-top:10px">Opciones consideradas: {opts_html}</p>
+
+<h2>5. Pensado para equipo</h2>
+<div class="card rec-A">
+<p>Si lo usara <b>todo el equipo</b>, hay dos formas de desplegarlo:</p>
+<table>
+<tr><th></th><th>A) Centralizada (servidor/Azure)</th><th>B) Local por analista</th></tr>
+<tr><td>Instalación</td><td>1 sola (IT)</td><td>Cada persona instala todo</td></tr>
+<tr><td>Acceso</td><td>Por navegador</td><td>App en cada equipo</td></tr>
+<tr><td>Mantenimiento</td><td>IT controla deps/modelo/versión</td><td>Cada uno el suyo</td></tr>
+<tr><td>Consistencia</td><td>Todos igual</td><td>Riesgo de versiones distintas</td></tr>
+<tr><td>Facilidad equipo</td><td>Alta</td><td>Baja</td></tr>
+</table>
+<p style="margin-top:12px"><b style="color:var(--teal)">Recomendación para Implica: opción A (centralizada).</b>
+El anonimizador ya está centralizado (Azure en el tenant de Implica). Añadir GLiNER ahí es
+<b>una decisión, no diez instalaciones</b>; nadie instala Torch ni descarga modelos; IT controla
+modelo, licencia y versión. La privacidad de B es redundante: la app central ya vive dentro del
+perímetro de Implica.</p>
+</div>
+
+<h2>6. Requisitos antes de que lo use el equipo</h2>
+<div class="card"><ul>{reqs}</ul></div>
+
+<h2>7. Archivos de esta carpeta</h2>
+<div class="card"><ul>
+<li><code>benchmark_resultado.html</code> — este informe</li>
+<li><code>benchmark_resultado.md</code> · <code>.csv</code> · <code>.json</code></li>
+<li>Documentos ficticios usados: teaser (PDF), Excel y PPT</li>
+</ul></div>
+
+<footer>Implica Corporate Finance · Benchmark local · GLiNER desactivado por defecto · datos ficticios</footer>
+</div></body></html>"""
 
 
 def _build_md(res):
@@ -408,10 +575,10 @@ def run():
     t = res["totals"]
     print(f"\nTotal: clásico {t['base_hits']}/{t['truth']} (FP {t['base_fp']}) · "
           f"GLiNER {t['gln_hits']}/{t['truth']} (FP {t['gln_fp']}) · recomendación: {_overall_reco(res)}")
-    print("\nInformes generados en la raíz del proyecto:")
-    print("  - benchmark_resultado.md")
-    print("  - benchmark_resultado.csv")
-    print("  - benchmark_resultado.json")
+    print(f"\nInformes generados en: {OUT}")
+    print("  - benchmark_resultado.html  (ábrelo con doble clic / abrir_benchmark.bat)")
+    print("  - benchmark_resultado.md / .csv / .json")
+    print("  - documentos ficticios: teaser (PDF), Excel, PPT")
     if not res["meta"]["gliner_active"]:
         print("\n⚠️ GLiNER no estaba activo → repite con IMPLICA_ENABLE_GLINER=true "
               "e IMPLICA_GLINER_ALLOW_DOWNLOAD=true para la comparación real.")
