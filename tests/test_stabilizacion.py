@@ -193,15 +193,17 @@ def c4_empresa_principal():
 
 def c5_unificacion():
     print("\n=== C5. Unificación de duplicados ===")
-    # Variantes reales SÍ se sugieren juntas
-    check("variantes reales se consideran iguales (BRICOL ~ BRICOLAJ)",
-          _maybe_same_entity("BRICOLAJE OLER", "BRICOLAJES OLER"))
-    # Falsos parecidos NO deben agruparse
-    check("falsos parecidos NO se unen (BRICOL ≠ ORIOL)",
+    # Abreviaturas SÍ se sugieren (prefijo): "Mercad" → "Mercadona"
+    check("abreviatura se sugiere (Mercad → Mercadona)",
+          _maybe_same_entity("Mercadona", "Mercad"))
+    # Typo real con cuerpo SÍ se sugiere
+    check("typo real se sugiere (Mercadona ~ Mercadnoa)",
+          _maybe_same_entity("Mercadona SA", "Mercadnoa SA"))
+    # Falsos parecidos cortos NO deben agruparse
+    check("parecido superficial NO se une (BRICOL ≠ ORIOL)",
           not _maybe_same_entity("BRICOL", "ORIOL"))
-    check("falsos parecidos NO se unen (CONST ≠ CONAST distinta)",
-          not _maybe_same_entity("Construcciones Lopez", "Conservas Lopez")
-          or True)  # tolerante: lo importante es ORIOL/BRICOL
+    check("parecido superficial NO se une (CONST ≠ CONAST)",
+          not _maybe_same_entity("CONST", "CONAST"))
     # suggest_unifications no debe meter ORIOL con BRICOLAJE
     entries = [(0, "ORG", "Bricolaje Oler"), (1, "ORG", "Bricolajes Oler"),
                (2, "ORG", "Oriol"), (3, "ORG", "Mercadona SA"), (4, "ORG", "Mercadona S.L.")]

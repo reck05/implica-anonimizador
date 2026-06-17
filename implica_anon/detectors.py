@@ -594,14 +594,19 @@ def _maybe_same_entity(a: str, b: str) -> bool:
     na, nb = normalize_org(a), normalize_org(b)
     if not na or not nb or na == nb:
         return False
-    score = fuzz.token_set_ratio(na, nb)
-    if 72 <= score < 92:
-        return True
-    # Abreviatura/prefijo: "mercad" es prefijo de "mercadona" (mín. 4 chars)
     ca, cb = na.replace(" ", ""), nb.replace(" ", "")
     short, lng = sorted([ca, cb], key=len)
+    # 1) Abreviatura/prefijo: el corto (≥4 chars) es prefijo del largo. Muy fiable:
+    #    "mercad" → "mercadona", "distrib" → "distribuciones".
     if len(short) >= 4 and lng.startswith(short):
         return True
+    # 2) Fuzzy SOLO para nombres con cuerpo (≥6 chars) y banda ALTA (typos reales),
+    #    con token_sort_ratio (no token_set, que es demasiado permisivo con siglas
+    #    cortas y agrupaba 'ORIOL' con 'BRICOL'). Por debajo de 6 chars, solo prefijo.
+    if len(short) >= 6:
+        score = fuzz.token_sort_ratio(na, nb)
+        if 82 <= score < 95:
+            return True
     return False
 
 
