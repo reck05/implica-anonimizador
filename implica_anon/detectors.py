@@ -39,6 +39,79 @@ EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 PHONE_ES_RE = re.compile(r"\b(?:\+?34[\s.-]?)?(?:6\d{2}|7[1-9]\d|9\d{2}|8\d{2})[\s.-]?\d{2,3}[\s.-]?\d{3}\b")
 
 
+# --- Validación por dígito de control (precisión: descartar falsos positivos) ---
+# El formato regex matchea muchas cadenas "tipo NIF/CIF" que no lo son (códigos de
+# producto, referencias...). El checksum confirma si es un identificador REAL.
+
+_NIF_LETTERS = "TRWAGMYFPDXBNJZSQVHLCKE"
+_CIF_CONTROL_LETTERS = "JABCDEFGHI"
+
+
+def validate_nif(s: str) -> bool:
+    """NIF (8 dígitos + letra) o NIE (X/Y/Z + 7 dígitos + letra), letra mod-23."""
+    m = re.fullmatch(r"(?:([XYZ])(\d{7})|(\d{8}))([A-Z])", s.strip().upper())
+    if not m:
+        return False
+    pre, nie_digits, nif_digits, letter = m.groups()
+    num = (str("XYZ".index(pre)) + nie_digits) if pre else nif_digits
+    try:
+        return _NIF_LETTERS[int(num) % 23] == letter
+    except Exception:
+        return False
+
+
+def validate_cif(s: str) -> bool:
+    """CIF: letra de organización + 7 dígitos + control (dígito o letra)."""
+    m = re.fullmatch(r"([ABCDEFGHJKLMNPQRSUVW])(\d{7})([0-9A-J])", s.strip().upper())
+    if not m:
+        return False
+    _org, digits, control = m.groups()
+    total = 0
+    for i, ch in enumerate(digits):
+        d = int(ch)
+        if i % 2 == 0:  # posición impar (1ª, 3ª...) → se dobla
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    cd = (10 - (total % 10)) % 10
+    # Según el tipo de organización el control es dígito o letra; aceptamos ambos.
+    return control == str(cd) or control == _CIF_CONTROL_LETTERS[cd]
+
+
+def validate_iban(s: str) -> bool:
+    """IBAN español: ES + 22 dígitos, validación mod-97 == 1."""
+    bare = re.sub(r"\s", "", s.strip().upper())
+    if not re.fullmatch(r"ES\d{22}", bare):
+        return False
+    rearranged = bare[4:] + bare[:4]
+    try:
+        num = "".join(str(int(c, 36)) for c in rearranged)
+        return int(num) % 97 == 1
+    except Exception:
+        return False
+
+
+# Etiquetas de contexto: si el documento marca explícitamente "CIF: ..." confiamos
+# en la etiqueta aunque el checksum falle (tolera erratas/OCR en el identificador).
+_CTX_LABELS = {
+    "CIF": ("cif", "c.i.f", "c/c.i.f"),
+    "NIF": ("nif", "nie", "dni", "n.i.f", "d.n.i"),
+    "IBAN": ("iban", "cuenta", "cta", "c/c", "ccc"),
+}
+_VALIDATORS = {"CIF": validate_cif, "NIF": validate_nif, "IBAN": validate_iban}
+
+
+def _keep_structured_id(kind: str, value: str, full_text: str, start: int) -> bool:
+    """¿Mantener este match de CIF/NIF/IBAN? Sí si pasa checksum, o si lleva una
+    etiqueta de contexto delante ("CIF: ...") aunque el checksum falle (erratas)."""
+    validator = _VALIDATORS.get(kind)
+    if validator and validator(value):
+        return True
+    ctx = full_text[max(0, start - 14):start].lower()
+    return any(lbl in ctx for lbl in _CTX_LABELS.get(kind, ()))
+
+
 # Sufijos societarios que normalizamos al clusterizar
 SOCIETY_SUFFIXES = (
     "s.l.u.", "s.l.u", "slu",
@@ -411,16 +484,21 @@ def detect_candidates(
 
     full_text = "\n".join(t for t in texts if t)
 
-    # Regex primero — son rápidos y deterministas
+    # Regex primero — son rápidos y deterministas. Validamos por checksum: un match
+    # con formato de CIF/NIF/IBAN solo se acepta si pasa el dígito de control O lleva
+    # una etiqueta de contexto delante (CIF:/NIF:/IBAN). Así no anonimizamos códigos
+    # de producto o referencias que solo "parecen" un identificador.
     for m in CIF_RE.finditer(full_text):
-        structured["CIF"].add(m.group())
+        if _keep_structured_id("CIF", m.group(), full_text, m.start()):
+            structured["CIF"].add(m.group())
     for m in NIF_RE.finditer(full_text):
         val = m.group()
         # Evitar duplicar con CIF (los CIF empiezan por letras válidas)
-        if val not in structured.get("CIF", set()):
+        if val not in structured.get("CIF", set()) and _keep_structured_id("NIF", val, full_text, m.start()):
             structured["NIF"].add(val)
     for m in IBAN_RE.finditer(full_text):
-        structured["IBAN"].add(m.group())
+        if _keep_structured_id("IBAN", m.group(), full_text, m.start()):
+            structured["IBAN"].add(m.group())
     for m in ADDRESS_RE.finditer(full_text):
         structured["ADDRESS"].add(m.group().strip())
     for m in EMAIL_RE.finditer(full_text):

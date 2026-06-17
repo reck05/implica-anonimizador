@@ -49,12 +49,13 @@ def make_small_mixto():
     p = FIX / "small_mixto.xlsx"
     wb = Workbook(); ws = wb.active; ws.title = "Datos"
     ws.append(["Tipo", "Nombre", "CIF", "Email", "Telefono"])
+    # CIFs VÁLIDOS (dígito de control correcto) — el detector ahora valida checksum
     rows = [
-        ("Principal", "Clinica Dental Sonrisa S.L.", "B12345678", "info@sonrisadental.es", "961112233"),
-        ("Cliente", "Distribuciones Garcia S.L.", "B11111111", "compras@garcia.es", "915550011"),
-        ("Cliente", "Mercadona SA", "A22222222", "", "963330022"),
-        ("Proveedor", "Suministros Dentales Ibericos S.L.", "B44444444", "ventas@sdi.es", ""),
-        ("Banco", "Banco Santander", "A66666666", "", ""),
+        ("Principal", "Clinica Dental Sonrisa S.L.", "B12345674", "info@sonrisadental.es", "961112233"),
+        ("Cliente", "Distribuciones Garcia S.L.", "B11111119", "compras@garcia.es", "915550011"),
+        ("Cliente", "Mercadona SA", "A22222228", "", "963330022"),
+        ("Proveedor", "Suministros Dentales Ibericos S.L.", "B44444446", "ventas@sdi.es", ""),
+        ("Banco", "Banco Santander", "A66666660", "", ""),
         ("Persona", "Laura Gomez Ruiz", "12345678Z", "lgomez@sonrisadental.es", "600111222"),
     ]
     for r in rows:
@@ -234,7 +235,7 @@ def c6_exportacion(small):
     pm.add("ORG", "Clinica Dental Sonrisa S.L.", "Paradise")
     pm.add("CLIENTE", "Distribuciones Garcia S.L.", "[Cliente-001]")
     pm.add("PROVEEDOR", "Suministros Dentales Ibericos S.L.", "[Proveedor-001]")
-    pm.add("CIF", "B12345678", "[CIF-001]")
+    pm.add("CIF", "B12345674", "[CIF-001]")
     with tempfile.TemporaryDirectory() as tmp:
         dst = Path(tmp) / "out.xlsx"
         result = formats.apply_replacements(small, pm.all_replacements(), dst)
@@ -244,7 +245,7 @@ def c6_exportacion(small):
             str(c.value) for ws in wb.worksheets for row in ws.iter_rows() for c in row if c.value)
         check("la empresa principal queda reemplazada por el codename", "Paradise" in txt)
         check("cliente reemplazado con su categoría", "[Cliente-001]" in txt)
-        check("CIF reemplazado en el output", "[CIF-001]" in txt and "B12345678" not in txt)
+        check("CIF reemplazado en el output", "[CIF-001]" in txt and "B12345674" not in txt)
         check("nombre real de la principal NO sobrevive", "Clinica Dental Sonrisa" not in txt)
         check("verify pass confirma limpio (sin las entidades del mapping)", result.is_clean,
               f"surviving={result.surviving}, verifiable={result.verifiable}")
@@ -503,6 +504,38 @@ def c10_robustez_formatos():
             check("PDF: metadatos limpiados", False, f"excepción: {e}")
 
 
+def c11_checksum_identificadores():
+    """Iter 10 fase 1: validación por dígito de control de NIF/CIF/IBAN.
+    Reduce falsos positivos (códigos que solo 'parecen' un ID) sin perder los
+    reales ni los etiquetados explícitamente."""
+    print("\n=== C11. Validación checksum NIF/CIF/IBAN ===")
+    from implica_anon.detectors import (
+        validate_nif, validate_cif, validate_iban, detect_candidates,
+    )
+    check("NIF válido aceptado (12345678Z)", validate_nif("12345678Z"))
+    check("NIE válido aceptado (X1234567L)", validate_nif("X1234567L"))
+    check("NIF inválido rechazado (12345678A)", not validate_nif("12345678A"))
+    check("CIF válido aceptado (B12345674)", validate_cif("B12345674"))
+    check("CIF inválido rechazado (B12345678)", not validate_cif("B12345678"))
+    check("IBAN válido aceptado", validate_iban("ES9121000418450200051332"))
+    check("IBAN inválido rechazado", not validate_iban("ES0021000418450200051332"))
+
+    # Detección: un código que parece NIF pero NO lo es y SIN etiqueta → se descarta
+    cands = detect_candidates(["Referencia interna 12345678A del pedido"], skip_ner=True)
+    nif_fp = [c for c in cands if c.kind == "NIF"]
+    check("código tipo-NIF sin etiqueta ni checksum NO se detecta (menos falsos +)",
+          not nif_fp, f"detectados={[c.text for c in nif_fp]}")
+    # Pero un NIF/CIF inválido CON etiqueta de contexto sí (tolera erratas)
+    cands2 = detect_candidates(["NIF: 12345678A del titular"], skip_ner=True)
+    check("ID inválido pero ETIQUETADO (NIF: ...) sí se detecta",
+          any(c.kind == "NIF" for c in cands2),
+          "kinds=" + ",".join(sorted({c.kind for c in cands2})))
+    # Y un CIF válido se detecta normal
+    cands3 = detect_candidates(["La sociedad B12345674 factura..."], skip_ner=True)
+    check("CIF válido se detecta sin necesidad de etiqueta",
+          any(c.kind == "CIF" for c in cands3))
+
+
 def print_report():
     print("\n" + "=" * 70)
     print("MÉTRICAS")
@@ -538,5 +571,6 @@ if __name__ == "__main__":
     c8_columna_nombre()
     c9_contexto_y_confidencialidad()
     c10_robustez_formatos()
+    c11_checksum_identificadores()
     all_ok = print_report()
     sys.exit(0 if all_ok else 1)
