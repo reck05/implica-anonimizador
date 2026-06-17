@@ -266,6 +266,64 @@ def c7_verify():
           fp == [], f"falsos positivos={fp}")
 
 
+def make_columna_nombre():
+    """Excel tabular SIN códigos PGC, con columna 'Cliente' de nombres reales:
+    varios de varias palabras (con artículo 'LA'/'EL') y uno corto ('ARTEC')."""
+    p = FIX / "columna_nombre.xlsx"
+    wb = Workbook(); ws = wb.active
+    ws.append(["Descripcion", "Cliente"])
+    casos = ["LA SIRENA SL", "RIVAS ALMACENES", "ARTEC",
+             "Suministros Garcia e Hijos SL", "EL CORTE AZUL SA",
+             "Distribuciones Lopez y Asociados SL"]
+    for c in casos:
+        ws.append([f"Abono ABC-PRE25-00001 {c}", c])
+    wb.save(p)
+    return p, casos
+
+
+def c8_columna_nombre():
+    """Regresión: nombres de columna 'Cliente' capturados COMPLETOS (no recortados
+    por spaCy) y reemplazados en TODAS las columnas, incluida la descripción."""
+    print("\n=== C8. Columnas de nombre (multi-palabra + cortos, sin PGC) ===")
+    from implica_anon import accounting
+    p, casos = make_columna_nombre()
+
+    named = accounting.scan_named_columns(p)
+    named_texts = {t for t, _ in named}
+    faltan = [c for c in casos if c not in named_texts]
+    check("columna 'Cliente': todos los nombres capturados COMPLETOS (incl. cortos)",
+          not faltan, f"faltan={faltan}" if faltan else "6/6")
+
+    # Pipeline completo como en la app (no PGC → use_ner=True): named + NER + cluster
+    cands = [Candidate(text=t, kind=k, count=1, source="column") for t, k in named]
+    cands += detect_candidates(formats.extract_text(p), skip_ner=False)
+    clusters = cluster_variants(cands)
+    canon = {cl.canonical for cl in clusters}
+    completos = [c for c in casos if c in canon]
+    # No deben quedar fragmentos recortados ("SIRENA SL", "ALMACENES", "AZUL SA")
+    fragmentos = [cl.canonical for cl in clusters
+                  if cl.kind in ("ORG", "PER")
+                  and any(cl.canonical != c and cl.canonical in c for c in casos)]
+    check("tras clustering, los 6 nombres siguen completos", len(completos) == 6,
+          f"{len(completos)}/6")
+    check("sin fragmentos recortados por spaCy en la tabla", not fragmentos,
+          f"fragmentos={fragmentos}" if fragmentos else "ninguno")
+
+    # Reemplazo end-to-end: ni la columna Cliente ni la Descripción dejan rastro
+    mapping = {c: f"[Cliente-{i+1:03d}]" for i, c in enumerate(casos)}
+    with tempfile.TemporaryDirectory() as tmp:
+        dst = Path(tmp) / "out.xlsx"
+        formats.apply_replacements(p, mapping, dst)
+        wb = load_workbook(dst)
+        txt = " ".join(str(c.value) for ws in wb.worksheets
+                       for row in ws.iter_rows() for c in row if c.value)
+    fugas = [frag for frag in ("SIRENA", "RIVAS", "ARTEC", "CORTE", "Distribuciones",
+                               "Suministros", "ALMACENES")
+             if frag.lower() in txt.lower()]
+    check("output sin fugas: ningún nombre real sobrevive (Cliente + Descripción)",
+          not fugas, f"fugas={fugas}" if fugas else "limpio")
+
+
 def print_report():
     print("\n" + "=" * 70)
     print("MÉTRICAS")
@@ -298,5 +356,6 @@ if __name__ == "__main__":
     c5_unificacion()
     c6_exportacion(small)
     c7_verify()
+    c8_columna_nombre()
     all_ok = print_report()
     sys.exit(0 if all_ok else 1)

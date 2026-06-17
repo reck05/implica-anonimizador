@@ -29,6 +29,7 @@ from implica_anon import (
     rehydrate as rehydrate_mod,
 )
 from implica_anon.detectors import (
+    Candidate,
     candidates_from_pgc,
     cluster_variants,
     detect_candidates,
@@ -238,6 +239,7 @@ def _require_project():
 def _scan_files(uploaded_files):
     """Auto-detecta tipo de cada archivo y junta candidatos deduplicados."""
     pgc_entities = []
+    named_entities: list[tuple[str, str]] = []
     all_texts: list[str] = []
     doctypes_by_file: dict[str, doctype_mod.DocTypeGuess] = {}
     errors: list[str] = []
@@ -275,11 +277,20 @@ def _scan_files(uploaded_files):
                 except Exception as e:
                     errors.append(f"Error escaneando PGC en {p.name}: {e}")
 
-    return all_texts, pgc_entities, doctypes_by_file, errors
+            # Columnas de nombre etiquetadas (Cliente/Proveedor/Razón social...):
+            # la celda completa ES la entidad. Determinista, no depende de spaCy.
+            # Captura nombres de varias palabras y cortos que spaCy recorta o salta.
+            if p.suffix.lower() in (".xlsx", ".xlsm"):
+                try:
+                    named_entities.extend(accounting.scan_named_columns(p))
+                except Exception as e:
+                    errors.append(f"Error leyendo columnas de nombre en {p.name}: {e}")
+
+    return all_texts, pgc_entities, named_entities, doctypes_by_file, errors
 
 
-def _build_candidates(all_texts, pgc_entities, use_ner: bool):
-    """Combina candidatos PGC + regex (+ NER si toca) y clusteriza."""
+def _build_candidates(all_texts, pgc_entities, named_entities, use_ner: bool):
+    """Combina candidatos PGC + columnas-nombre + regex (+ NER si toca) y clusteriza."""
     candidates = []
 
     # 1) Si hay PGC entities, candidatos PGC son AUTORITATIVOS
@@ -288,7 +299,14 @@ def _build_candidates(all_texts, pgc_entities, use_ner: bool):
             def __init__(self, ents): self.entities = ents
         candidates.extend(candidates_from_pgc(_FakeScan(pgc_entities)))
 
-    # 2) Regex siempre (CIF, IBAN, email, teléfono, dirección)
+    # 2) Columnas de nombre: celda completa = entidad (determinista, autoritativo)
+    if named_entities:
+        from collections import Counter
+        counts = Counter(named_entities)
+        for (text, kind), cnt in counts.items():
+            candidates.append(Candidate(text=text, kind=kind, count=cnt, source="column"))
+
+    # 3) Regex siempre (CIF, IBAN, email, teléfono, dirección)
     candidates.extend(detect_candidates(all_texts, skip_ner=not use_ner))
 
     return cluster_variants(candidates)
@@ -664,7 +682,7 @@ with tab_anon:
     if st.button("🔍 Analizar", type="primary"):
         try:
             with st.spinner("Detectando tipo de documento..."):
-                all_texts, pgc_entities, doctypes, errors = _scan_files(uploaded)
+                all_texts, pgc_entities, named_entities, doctypes, errors = _scan_files(uploaded)
         except Exception as e:
             st.error(f"Error escaneando archivos: {e}")
             st.stop()
@@ -731,7 +749,7 @@ with tab_anon:
 
         try:
             with st.spinner(spinner_msg):
-                clusters = _build_candidates(all_texts, pgc_entities, use_ner=use_ner)
+                clusters = _build_candidates(all_texts, pgc_entities, named_entities, use_ner=use_ner)
         except RuntimeError as e:
             st.error(
                 f"Error cargando el modelo de NLP: {e}\n\n"

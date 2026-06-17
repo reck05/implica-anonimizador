@@ -584,18 +584,14 @@ def _gliner_candidates(full_text: str, existing: list[Candidate]) -> list[Candid
     return out
 
 
-def _maybe_same_entity(a: str, b: str) -> bool:
-    """Heurística para SUGERIR (no decidir) que dos nombres son la misma entidad.
-
-    Más laxa que el clustering automático (umbral 90): captura la zona gris
-    (similitud media o abreviaturas tipo 'Mercad' → 'Mercadona') para que el
-    humano confirme. NO se aplica automáticamente — solo genera sugerencias.
-    """
-    na, nb = normalize_org(a), normalize_org(b)
+def _same_entity_norm(na: str, nb: str) -> bool:
+    """Igual que `_maybe_same_entity` pero recibe nombres YA normalizados
+    (compactados por `normalize_org`, sin espacios). Evita re-normalizar en
+    cada comparación — crítico para el rendimiento de `suggest_unifications`,
+    que compara muchos pares dentro de un mismo bloque."""
     if not na or not nb or na == nb:
         return False
-    ca, cb = na.replace(" ", ""), nb.replace(" ", "")
-    short, lng = sorted([ca, cb], key=len)
+    short, lng = sorted([na, nb], key=len)
     # 1) Abreviatura/prefijo: el corto (≥4 chars) es prefijo del largo. Muy fiable:
     #    "mercad" → "mercadona", "distrib" → "distribuciones".
     if len(short) >= 4 and lng.startswith(short):
@@ -610,24 +606,56 @@ def _maybe_same_entity(a: str, b: str) -> bool:
     return False
 
 
+def _maybe_same_entity(a: str, b: str) -> bool:
+    """Heurística para SUGERIR (no decidir) que dos nombres son la misma entidad.
+
+    Más laxa que el clustering automático (umbral 90): captura la zona gris
+    (similitud media o abreviaturas tipo 'Mercad' → 'Mercadona') para que el
+    humano confirme. NO se aplica automáticamente — solo genera sugerencias.
+    """
+    return _same_entity_norm(normalize_org(a), normalize_org(b))
+
+
+# Kinds que SÍ son nombres y tiene sentido sugerir unificar (empresas/personas).
+# Los identificadores estructurados (CIF/NIF/IBAN/email/teléfono/dirección) son
+# valores únicos: NUNCA se "unifican" por parecido — dos CIF que difieren en un
+# dígito NO son la misma entidad. Excluirlos también evita el coste de comparar
+# miles de CIF casi idénticos por fuzzy.
+_UNIFIABLE_KINDS = frozenset({
+    "ORG", "PER", "CLIENTE", "PROVEEDOR", "DEUDOR", "PERSONA", "GRUPO", "BANCO",
+})
+
+
 def suggest_unifications(entries: list[tuple]) -> list[list]:
     """Agrupa candidatos que PODRÍAN ser la misma entidad (para sugerir al usuario).
 
     `entries`: lista de (id, kind, nombre). Devuelve grupos [[id, id, ...]] con
     2+ miembros del mismo kind que parecen la misma empresa pero que el
     clustering automático no unió. El usuario decide si unificarlos.
+
+    Solo considera nombres (empresas/personas); los identificadores estructurados
+    (CIF/NIF/IBAN/email/teléfono/dirección) se ignoran — son valores únicos.
     """
     # Índice por bloque (kind + primeros 2 chars del nombre normalizado) para no
-    # comparar todos contra todos en cada rerun de la UI. Casi O(n).
+    # comparar todos contra todos en cada rerun de la UI. Casi O(n). El coste real
+    # estaba en re-normalizar ambos nombres en cada comparación; ahora usamos el
+    # `nm` ya cacheado (`_same_entity_norm`), así que el bloque de 2 chars vuela.
     norm_map: dict = {}
     by_block: dict = defaultdict(list)
     order: list = []
     for id_, kind, name in entries:
+        if kind not in _UNIFIABLE_KINDS:
+            continue  # CIF/NIF/IBAN/... no se sugieren para unificar
         nm = normalize_org(name)
         norm_map[id_] = (kind, name, nm)
         order.append(id_)
         if nm:
             by_block[(kind, nm[:2])].append(id_)
+
+    # Salvaguarda anti-cuelgue: un bloque enorme (miles de nombres casi idénticos)
+    # daría O(n²) dentro del bloque. Por encima de este tamaño no sugerimos para ese
+    # bloque — las sugerencias son una comodidad opcional, no deben colgar la UI.
+    MAX_BLOCK = 600
 
     groups: list[list] = []
     used: set = set()
@@ -637,11 +665,14 @@ def suggest_unifications(entries: list[tuple]) -> list[list]:
         kind_a, name_a, nm_a = norm_map[id_a]
         if not nm_a:
             continue
+        block = by_block.get((kind_a, nm_a[:2]), ())
+        if len(block) > MAX_BLOCK:
+            continue
         group = [id_a]
-        for id_b in by_block.get((kind_a, nm_a[:2]), ()):  # solo el mismo bloque
+        for id_b in block:  # solo el mismo bloque
             if id_b == id_a or id_b in used:
                 continue
-            if _maybe_same_entity(name_a, norm_map[id_b][1]):
+            if _same_entity_norm(nm_a, norm_map[id_b][2]):  # norm ya cacheado
                 group.append(id_b)
         if len(group) > 1:
             groups.append(group)
@@ -785,17 +816,28 @@ def cluster_variants(
                 pgc_texts_normalized.add(normalize_org(v))
                 pgc_texts_normalized.add(normalize_person(v))
 
+    # Conjunto compactado (sin espacios) de los nombres autoritativos, para
+    # detectar fragmentos que spaCy recortó: "sirena" ⊂ "lasirena" (LA SIRENA SL).
+    pgc_compact = {n for n in pgc_texts_normalized if len(n) >= 4}
+
     deduped_clusters: list[Cluster] = []
     for c in clusters:
         if c.kind in ("ORG", "PER"):
-            # ¿Alguna de sus variantes ya está en un cluster PGC?
+            # ¿Alguna de sus variantes ya está en un cluster PGC/columna-nombre,
+            # exacta o como fragmento contenido en un nombre más completo?
             in_pgc = False
             for v in c.variants:
-                if normalize_org(v) in pgc_texts_normalized or normalize_person(v) in pgc_texts_normalized:
+                nv = normalize_org(v)
+                if nv in pgc_texts_normalized or normalize_person(v) in pgc_texts_normalized:
+                    in_pgc = True
+                    break
+                # Fragmento recortado por spaCy contenido en un nombre completo
+                # autoritativo ("ALMACENES" ⊂ "RIVASALMACENES"). Min 4 chars.
+                if len(nv) >= 4 and any(nv != pn and nv in pn for pn in pgc_compact):
                     in_pgc = True
                     break
             if in_pgc:
-                continue  # descartamos el cluster NER, el PGC ya lo cubre
+                continue  # descartamos el cluster NER, el autoritativo ya lo cubre
         deduped_clusters.append(c)
     clusters = deduped_clusters
 

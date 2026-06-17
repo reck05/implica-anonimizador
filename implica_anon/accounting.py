@@ -102,6 +102,41 @@ COLUMN_HINTS_NUMERIC = (
     "acumulado debe", "acumulado haber", "total debe", "total haber",
 )
 
+# --- Columnas de NOMBRE (no PGC): la celda completa ES la entidad ---
+# Caso: Excels tabulares (listados de clientes, extractos, CRM exportado) con una
+# columna claramente etiquetada "Cliente"/"Proveedor"/"Razón social" pero SIN
+# códigos de cuenta PGC. Aquí la cabecera ya nos dice que toda la columna son
+# nombres → tomamos el valor COMPLETO de la celda como entidad, sin pasar por
+# spaCy (que recorta mal "LA SIRENA SL" → "SIRENA SL" y se salta los cortos).
+# El orden importa: las pistas específicas (cliente/proveedor) ganan a "nombre".
+NAME_COLUMN_HINTS: list[tuple[tuple[str, ...], str]] = [
+    (("cliente", "clientes"), "CLIENTE"),
+    (("proveedor", "proveedores", "acreedor", "acreedores"), "PROVEEDOR"),
+    (("deudor", "deudores"), "DEUDOR"),
+    (("razón social", "razon social", "denominación social", "denominacion social",
+      "denominación", "denominacion", "titular", "nombre fiscal",
+      "razón social", "contraparte"), "ORG"),
+    (("nombre", "empresa", "sociedad", "entidad", "razón", "razon"), "ORG"),
+]
+
+# Si la cabecera contiene alguna de estas, NO es columna de nombre (es código,
+# tipo, fecha, importe, identificador o dato de contacto estructurado).
+NAME_COLUMN_EXCLUDE = (
+    "código", "codigo", "cod.", "cód.", " id", "id ", "nº", "n.º", "núm", "num",
+    "tipo", "estado", "fecha", "importe", "saldo", "debe", "haber", "total",
+    "teléfono", "telefono", "email", "correo", "cif", "nif", "iban",
+    "dirección", "direccion", "postal", "población", "poblacion", "provincia",
+    "país", "pais", "móvil", "movil", "cuenta",
+)
+
+# Valores genéricos de una columna de cliente/proveedor que NO son nombres reales.
+NAME_COLUMN_GENERIC_VALUES = frozenset(s.lower() for s in [
+    "varios", "vario", "cliente", "clientes", "proveedor", "proveedores",
+    "cliente contado", "contado", "cliente genérico", "cliente generico",
+    "clientes varios", "proveedores varios", "otros", "otro", "varios clientes",
+    "sin nombre", "n/a", "na", "ninguno", "no aplica", "-", "—", "varios proveedores",
+])
+
 
 @dataclass
 class AccountingEntity:
@@ -276,6 +311,118 @@ def scan_workbook(path: Path) -> AccountingScanResult:
         except Exception:
             pass
     return result
+
+
+# --- Detección de columnas de nombre (Cliente/Proveedor/Razón social...) ---
+
+def _name_header_kind(value) -> str | None:
+    """Si la cabecera identifica una columna de NOMBRES de entidad, devuelve el
+    kind (CLIENTE/PROVEEDOR/DEUDOR/ORG). Si no, None."""
+    h = _normalize_header(value)
+    if not h or len(h) > 60:
+        return None
+    if any(x in h for x in NAME_COLUMN_EXCLUDE):
+        return None
+    for hints, kind in NAME_COLUMN_HINTS:
+        if any(hint in h for hint in hints):
+            return kind
+    return None
+
+
+def _find_name_columns(ws, max_scan: int = 40) -> tuple[int, dict[int, str]]:
+    """Busca la fila de cabecera con MÁS columnas de nombre y devuelve
+    (fila_cabecera, {col_idx: kind}). Si no hay ninguna, ({}, 0)."""
+    best_row = 0
+    best_cols: dict[int, str] = {}
+    max_row = ws.max_row if ws.max_row else max_scan
+    max_col = ws.max_column or 0
+    for r in range(1, min(max_scan, max_row) + 1):
+        cols: dict[int, str] = {}
+        for c in range(1, max_col + 1):
+            kind = _name_header_kind(ws.cell(row=r, column=c).value)
+            if kind:
+                cols[c] = kind
+        if len(cols) > len(best_cols):
+            best_cols = cols
+            best_row = r
+    return best_row, best_cols
+
+
+def _is_anonymizable_name(s: str) -> bool:
+    """True si el valor de una celda de columna-nombre parece un nombre real
+    (no un genérico, una referencia, un identificador o un número)."""
+    # Import diferido para evitar ciclo de imports a nivel de módulo.
+    from .detectors import (
+        GENERIC_STOPWORDS, _looks_like_excel_artifact, _is_document_ref,
+        CIF_RE, NIF_RE, IBAN_RE,
+    )
+    if not s or len(s) < 2:
+        return False
+    low = s.lower()
+    if low in NAME_COLUMN_GENERIC_VALUES or low in GENERIC_STOPWORDS:
+        return False
+    # Identificadores estructurados: los cubre el detector regex, no aquí.
+    if CIF_RE.fullmatch(s) or NIF_RE.fullmatch(s) or IBAN_RE.fullmatch(s.replace(" ", "")):
+        return False
+    # Sólo números/fechas/símbolos
+    if re.fullmatch(r"[\d.,/\-\s€$%]+", s):
+        return False
+    if _looks_like_excel_artifact(s) or _is_document_ref(s):
+        return False
+    return True
+
+
+def scan_named_columns(path: Path, max_rows: int = 100_000) -> list[tuple[str, str]]:
+    """Extrae nombres de columnas etiquetadas (Cliente/Proveedor/Razón social...).
+
+    Toma la CELDA COMPLETA como entidad — resuelve el caso de Excels tabulares
+    (no sumas y saldos PGC) donde spaCy recorta los nombres de varias palabras y
+    se salta los cortos. Determinista: la cabecera es la autoridad.
+
+    Devuelve [(texto, kind), ...] deduplicado por (texto, kind).
+    """
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    try:
+        wb = load_workbook(filename=str(path), data_only=True, read_only=True)
+    except Exception:
+        try:
+            wb = load_workbook(filename=str(path), data_only=False, read_only=True)
+        except Exception:
+            return out
+    try:
+        for ws in wb.worksheets:
+            try:
+                header_row, name_cols = _find_name_columns(ws)
+                if not name_cols:
+                    continue
+                n = 0
+                for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+                    if n >= max_rows:
+                        break
+                    n += 1
+                    for col_idx, kind in name_cols.items():
+                        if col_idx - 1 >= len(row):
+                            continue
+                        val = row[col_idx - 1]
+                        if not isinstance(val, str):
+                            continue
+                        s = val.strip()
+                        if not _is_anonymizable_name(s):
+                            continue
+                        key = (s, kind)
+                        if key not in seen:
+                            seen.add(key)
+                            out.append((s, kind))
+            except Exception:
+                # Una hoja problemática no debe tumbar la herramienta.
+                continue
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+    return out
 
 
 # --- Limpieza y normalización de descripciones contables ---
