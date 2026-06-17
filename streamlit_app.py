@@ -456,30 +456,43 @@ def _render_merge_suggestions(df_full, project: str) -> None:
         return
 
     rowid_to_row = {int(r["_rowid"]): r for _, r in df_full.iterrows()}
-    with st.expander(f"💡 {len(groups)} posible(s) duplicado(s) — ¿unificar?", expanded=True):
+    with st.expander(f"💡 {len(groups)} posible(s) duplicado(s) — revisa y unifica",
+                     expanded=len(groups) <= 12):
         st.caption(
-            "Nombres parecidos que podrían ser la misma empresa. Si lo son, "
-            "pulsa **Unificar** para que compartan codename. Si no, ignóralo."
+            "Marca solo los que SÍ son la misma empresa (desmarca los que no encajen), "
+            "elige el codename y pulsa **Unificar marcados**. Para añadir uno que no "
+            "salga aquí, ponle el mismo codename a mano en la tabla de abajo."
         )
         for gi, group in enumerate(groups):
             members = [rowid_to_row[rid] for rid in group if rid in rowid_to_row]
             if len(members) < 2:
                 continue
-            names = [m["Canónico"] for m in members]
             best = max(members, key=lambda m: m["Ocurrencias"])
-            best_codename = best["Codename"]
-            cols = st.columns([5, 1])
-            cols[0].markdown(
-                "• " + "   ·   ".join(f"**{n}**" for n in names)
-                + f"  →  `{best_codename}`"
+            st.markdown("---")
+            selected = []
+            for m in members:
+                rid = int(m["_rowid"])
+                # Por defecto marcado; el usuario desmarca los que no van
+                if st.checkbox(
+                    f"{m['Canónico']}  ·  {m['Ocurrencias']}×  ({m['Codename']})",
+                    value=True, key=f"mrg_{gi}_{rid}",
+                ):
+                    selected.append(rid)
+            col_t, col_b = st.columns([3, 1])
+            target = col_t.text_input(
+                "Codename a aplicar", value=best["Codename"],
+                key=f"mrgt_{gi}", label_visibility="collapsed",
             )
-            if cols[1].button("Unificar", key=f"merge_{gi}_{best['_rowid']}"):
-                for rid in group:
-                    idx = df_full[df_full["_rowid"] == rid].index
-                    if len(idx) > 0:
-                        df_full.loc[idx[0], "Codename"] = best_codename
-                st.session_state["df"] = df_full
-                st.rerun()
+            if col_b.button("Unificar marcados", key=f"mrgb_{gi}"):
+                if len(selected) >= 1 and target.strip():
+                    for rid in selected:
+                        idx = df_full[df_full["_rowid"] == rid].index
+                        if len(idx) > 0:
+                            df_full.loc[idx[0], "Codename"] = target.strip()
+                    st.session_state["df"] = df_full
+                    st.rerun()
+                else:
+                    st.warning("Marca al menos un nombre y escribe un codename.")
 
 
 def _df_to_mapping(df: pd.DataFrame, project: str) -> mapping_mod.ProjectMapping:
