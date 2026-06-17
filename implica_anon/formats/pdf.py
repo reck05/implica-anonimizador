@@ -1,11 +1,18 @@
 """Procesador de PDF con PyMuPDF (fitz).
 
 Usa redact_annot + apply_redactions + insert_textbox para reemplazar in-place
-preservando layout. Funciona para PDFs con texto seleccionable. Para PDFs
-escaneados (sin OCR) no detecta nada — habría que pre-procesarlos con OCR.
+preservando layout. Funciona para PDFs con texto seleccionable.
+
+PDFs ESCANEADOS (sin capa de texto): capa OPCIONAL de OCR (Tesseract) que SOLO
+extrae texto para que la DETECCIÓN vea los nombres. El reemplazo in-place sobre la
+imagen NO es posible con search_for, así que el verify pass (que vuelve a hacer OCR
+del resultado) AVISARÁ de que el nombre sigue en la imagen — sin dar un falso "OK".
+Se activa con IMPLICA_ENABLE_OCR=true y requiere el binario Tesseract instalado.
 """
 from __future__ import annotations
 
+import os
+from functools import lru_cache
 from pathlib import Path
 
 import fitz  # PyMuPDF
@@ -14,6 +21,36 @@ from ..replacer import replace_in_text
 
 # Protección de memoria: tope de páginas a procesar de un PDF
 MAX_PDF_PAGES = 1000
+
+
+def _ocr_enabled() -> bool:
+    return os.environ.get("IMPLICA_ENABLE_OCR", "").lower() in ("1", "true", "yes", "on")
+
+
+@lru_cache(maxsize=1)
+def ocr_available() -> bool:
+    """True si pytesseract Y el binario Tesseract están disponibles."""
+    try:
+        import pytesseract
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:
+        return False
+
+
+def _ocr_page_text(page) -> str:
+    """OCR de una página (rasteriza a imagen y la pasa por Tesseract). Defensivo:
+    si falta el binario o falla, devuelve '' (nunca rompe)."""
+    try:
+        import io
+        import pytesseract
+        from PIL import Image
+        lang = os.environ.get("IMPLICA_OCR_LANG", "spa")
+        pix = page.get_pixmap(dpi=200)
+        img = Image.open(io.BytesIO(pix.tobytes("png")))
+        return pytesseract.image_to_string(img, lang=lang) or ""
+    except Exception:
+        return ""
 
 
 def extract_text(path: Path) -> list[str]:
@@ -28,6 +65,7 @@ def extract_text(path: Path) -> list[str]:
                     texts.append(v.strip())
         except Exception:
             pass
+        use_ocr = _ocr_enabled() and ocr_available()
         for i, page in enumerate(doc):
             if i >= MAX_PDF_PAGES:
                 break
@@ -35,6 +73,11 @@ def extract_text(path: Path) -> list[str]:
             if page_text.strip():
                 # Devolver por bloques para que NER tenga contexto, no por línea suelta
                 texts.append(page_text)
+            elif use_ocr:
+                # Página sin capa de texto (escaneada): OCR para DETECTAR los nombres.
+                ocr_text = _ocr_page_text(page)
+                if ocr_text.strip():
+                    texts.append(ocr_text)
     return texts
 
 

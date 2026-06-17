@@ -578,6 +578,35 @@ def c12_presidio_opcional():
             pass
 
 
+def c13_ocr_opcional():
+    """Iter 10 fase 3: capa OCR opcional para PDFs escaneados. Off por defecto y
+    degrada con gracia si falta el binario Tesseract (no rompe)."""
+    print("\n=== C13. OCR opcional (PDF escaneado) ===")
+    import os as _os
+    from implica_anon.formats import pdf as _pdf
+
+    _os.environ.pop("IMPLICA_ENABLE_OCR", None)
+    check("OCR OFF por defecto", not _pdf._ocr_enabled())
+    # ocr_available no debe lanzar (devuelve True/False según haya binario)
+    try:
+        av = _pdf.ocr_available()
+        check("ocr_available() no lanza (devuelve bool)", isinstance(av, bool), f"disponible={av}")
+    except Exception as e:
+        check("ocr_available() no lanza", False, f"excepción: {e}")
+
+    # Un PDF con capa de texto se extrae igual (OCR no interfiere)
+    try:
+        import fitz as _fitz, tempfile as _tmp
+        from pathlib import Path as _P
+        doc = _fitz.open(); pg = doc.new_page(); pg.insert_text((72, 72), "Texto Global Menta")
+        with _tmp.TemporaryDirectory() as t:
+            f = _P(t) / "t.pdf"; doc.save(str(f)); doc.close()
+            txt = " ".join(_pdf.extract_text(f))
+        check("PDF con texto se extrae normal (OCR no interfiere)", "Global Menta" in txt)
+    except Exception as e:
+        check("PDF con texto se extrae normal", False, f"excepción: {e}")
+
+
 def print_report():
     print("\n" + "=" * 70)
     print("MÉTRICAS")
@@ -615,5 +644,6 @@ if __name__ == "__main__":
     c10_robustez_formatos()
     c11_checksum_identificadores()
     c12_presidio_opcional()
+    c13_ocr_opcional()
     all_ok = print_report()
     sys.exit(0 if all_ok else 1)
