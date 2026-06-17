@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import pickle
 import re
 import secrets
 import tempfile
@@ -33,6 +34,41 @@ from implica_anon.detectors import (
     detect_candidates,
 )
 from implica_anon.interactive import DEFAULT_PLACEHOLDERS, KIND_LABELS
+
+
+# --- Caché de sesión por proyecto (para "reanudar" tras refresco/reinicio) ---
+# Guarda en local el último análisis (archivos + tabla) para no re-subir.
+# Vive en projects/.cache (gitignored). Contiene datos del cliente → botón para borrar.
+def _session_cache_path(project: str) -> Path:
+    d = mapping_mod.PROJECTS_DIR / ".cache"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{project.lower()}.session.pkl"
+
+
+def _save_session_cache(project: str, payload: dict) -> None:
+    try:
+        with _session_cache_path(project).open("wb") as f:
+            pickle.dump(payload, f)
+    except Exception:
+        pass  # best-effort, nunca rompe el flujo
+
+
+def _load_session_cache(project: str):
+    p = _session_cache_path(project)
+    if not p.exists():
+        return None
+    try:
+        with p.open("rb") as f:
+            return pickle.load(f)
+    except Exception:
+        return None
+
+
+def _clear_session_cache(project: str) -> None:
+    try:
+        _session_cache_path(project).unlink(missing_ok=True)
+    except Exception:
+        pass
 
 st.set_page_config(
     page_title="Implica Anonimizador",
@@ -114,6 +150,25 @@ with st.sidebar:
         st.metric("Entradas en mapping", total)
         if pm.updated_at:
             st.caption(f"Actualizado: {pm.updated_at}")
+
+        # Reanudar último análisis (memoria entre refrescos/reinicios)
+        if "df" not in st.session_state or st.session_state.get("proj") != project:
+            cached = _load_session_cache(project)
+            if cached:
+                n = len(cached.get("upload_data", []))
+                if st.button(f"▶️ Reanudar último análisis ({n} archivo/s)",
+                             use_container_width=True,
+                             help="Recupera el último análisis sin volver a subir el documento."):
+                    st.session_state["df"] = cached["df"]
+                    st.session_state["upload_data"] = cached["upload_data"]
+                    st.session_state["proj"] = project
+                    st.session_state["is_accounting"] = cached.get("is_accounting", False)
+                    st.session_state["clusters_raw"] = cached.get("clusters_raw", [])
+                    st.rerun()
+                if st.button("🗑️ Borrar caché de este proyecto", use_container_width=True,
+                             help="Elimina del disco el documento y la tabla guardados (confidencialidad)."):
+                    _clear_session_cache(project)
+                    st.success("Caché borrada.")
 
         with st.expander("Ver mapping actual"):
             if not pm.entries:
@@ -632,6 +687,13 @@ with tab_anon:
         st.session_state["proj"] = project
         st.session_state["is_accounting"] = is_accounting
         st.session_state["clusters_raw"] = clusters  # para regenerar si cambia modo
+        # Guardar caché para poder reanudar tras refresco/reinicio sin re-subir
+        _save_session_cache(project, {
+            "upload_data": st.session_state["upload_data"],
+            "df": df,
+            "is_accounting": is_accounting,
+            "clusters_raw": clusters,
+        })
         st.success(f"Detectados {len(df)} grupos únicos.")
 
         # Estado de la capa opcional GLiNER (si está activada)

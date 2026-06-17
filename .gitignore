@@ -21,6 +21,7 @@ build/
 projects/*.json
 projects/*.jsonl
 projects/.backups/
+projects/.cache/
 !projects/.gitkeep
 # Carpetas con documentos del cliente
 input/
