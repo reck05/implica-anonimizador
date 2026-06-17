@@ -19,6 +19,15 @@ MAX_PDF_PAGES = 1000
 def extract_text(path: Path) -> list[str]:
     texts: list[str] = []
     with fitz.open(str(path)) as doc:
+        # Metadatos (autor/título/asunto/keywords): fuga silenciosa si no se ven.
+        try:
+            md = doc.metadata or {}
+            for k in ("title", "author", "subject", "keywords"):
+                v = md.get(k)
+                if isinstance(v, str) and v.strip():
+                    texts.append(v.strip())
+        except Exception:
+            pass
         for i, page in enumerate(doc):
             if i >= MAX_PDF_PAGES:
                 break
@@ -27,6 +36,15 @@ def extract_text(path: Path) -> list[str]:
                 # Devolver por bloques para que NER tenga contexto, no por línea suelta
                 texts.append(page_text)
     return texts
+
+
+def page_count(path: Path) -> int:
+    """Número de páginas del PDF (para avisar de truncamiento por MAX_PDF_PAGES)."""
+    try:
+        with fitz.open(str(path)) as doc:
+            return doc.page_count
+    except Exception:
+        return 0
 
 
 def count_images(path: Path) -> int:
@@ -56,6 +74,26 @@ def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> None:
 
     # Orden por longitud desc para evitar matches parciales
     ordered = sorted(mapping.items(), key=lambda kv: -len(kv[0]))
+
+    def _scrub_pdf_metadata(doc) -> None:
+        """Limpia metadatos del PDF: identidad → vacío; título/asunto/keywords →
+        mapping. Borra también el XMP. Evita la fuga por «Propiedades» del PDF."""
+        try:
+            md = dict(doc.metadata or {})
+            for k in ("title", "subject", "keywords"):
+                v = md.get(k)
+                if isinstance(v, str) and v:
+                    md[k] = replace_in_text(v, mapping)[0]
+            md["author"] = ""
+            md["creator"] = ""
+            md["producer"] = "Implica Anonimizador"
+            doc.set_metadata(md)
+            try:
+                doc.del_xml_metadata()
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     with fitz.open(str(src)) as doc:
         for i, page in enumerate(doc):
@@ -91,4 +129,5 @@ def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> None:
                     )
                     annot.update()
             page.apply_redactions()
+        _scrub_pdf_metadata(doc)
         doc.save(str(dst), garbage=4, deflate=True)

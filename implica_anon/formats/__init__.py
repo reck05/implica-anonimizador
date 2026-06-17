@@ -96,5 +96,18 @@ def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> VerifyR
                 f"El PDF contiene {n_imgs} imagen(es). Si algún nombre aparece DENTRO "
                 "de una imagen (logo, captura, escaneo), NO se anonimiza. Revísalas."
             )
+        # Truncamiento por límite de páginas: lo que está más allá NO se procesó
+        # NI se verificó → no demos un falso "OK".
+        try:
+            n_pages = pdf.page_count(src)
+            if n_pages > pdf.MAX_PDF_PAGES:
+                result.verifiable = False
+                result.warnings.append(
+                    f"El PDF tiene {n_pages} páginas y solo se procesaron las primeras "
+                    f"{pdf.MAX_PDF_PAGES}. Las páginas {pdf.MAX_PDF_PAGES + 1}+ NO se "
+                    "anonimizaron ni verificaron — divídelo y procésalo por partes."
+                )
+        except Exception:
+            pass
 
     return result

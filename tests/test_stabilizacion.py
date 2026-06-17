@@ -367,6 +367,142 @@ def c9_contexto_y_confidencialidad():
           "Azul" in canon, f"canon={sorted(canon)}")
 
 
+def c10_robustez_formatos():
+    """Regresión Iter 9: metadatos scrub en todos los formatos + cobertura Excel
+    (comentarios/hipervínculos/validaciones), PPTX (hipervínculos), Word (partes
+    ocultas vía XML) y validez del .docx tras el sweep."""
+    print("\n=== C10. Robustez cross-formato (metadatos + canales ocultos) ===")
+    import tempfile as _tmp
+    from pathlib import Path as _P
+    NAME = "Global Menta S.L."
+    CODE = "Paradise"
+    mapping = {NAME: CODE}
+
+    with _tmp.TemporaryDirectory() as d:
+        d = _P(d)
+
+        # --- Excel: metadatos + comentario + hipervínculo + validación de datos ---
+        try:
+            from openpyxl import Workbook as _WB, load_workbook as _LW
+            from openpyxl.comments import Comment as _Cm
+            from openpyxl.worksheet.datavalidation import DataValidation as _DV
+            wb = _WB(); ws = wb.active
+            ws["A1"] = "Cabecera"
+            ws["A2"] = "dato"
+            ws["A2"].comment = _Cm(f"Nota: cliente {NAME}", "rev")
+            ws["B2"] = "link"
+            ws["B2"].hyperlink = f"https://crm.local/?c={NAME}"
+            dv = _DV(type="list", formula1=f'"{NAME},Otra"')
+            ws.add_data_validation(dv); dv.add("C2")
+            wb.properties.creator = "Carlos García"
+            wb.properties.title = f"Deal {NAME}"
+            xs = d / "m.xlsx"; wb.save(xs)
+            xo = d / "m.out.xlsx"; formats.apply_replacements(xs, mapping, xo)
+            wo = _LW(xo)
+            wso = wo.active
+            cmt_ok = NAME not in (wso["A2"].comment.text if wso["A2"].comment else "")
+            hl_ok = wso["B2"].hyperlink is None or NAME not in (wso["B2"].hyperlink.target or "")
+            dv_ok = all(NAME not in (x.formula1 or "") for x in wso.data_validations.dataValidation)
+            meta_ok = (not wo.properties.creator) and (NAME not in (wo.properties.title or ""))
+            check("Excel: comentario de celda anonimizado", cmt_ok)
+            check("Excel: hipervínculo de celda anonimizado", hl_ok)
+            check("Excel: validación de datos anonimizada", dv_ok)
+            check("Excel: metadatos (autor vacío, título mapeado)", meta_ok,
+                  f"creator={wo.properties.creator!r} title={wo.properties.title!r}")
+        except Exception as e:
+            check("Excel: cobertura ampliada", False, f"excepción: {e}")
+
+        # --- Word: metadatos + cuerpo (vía apply) y partes ocultas (vía sweep) ---
+        try:
+            from docx import Document as _Doc
+            from implica_anon.replacer import Replacer as _Rep
+            from implica_anon.formats import word as _wordmod
+            import zipfile as _zip
+            doc = _Doc()
+            doc.add_paragraph(f"Cuerpo: {NAME}")
+            doc.core_properties.author = "Carlos García"
+            doc.core_properties.title = f"Proyecto {NAME}"
+            ws_ = d / "m.docx"; doc.save(ws_)
+            do = d / "m.out.docx"; formats.apply_replacements(ws_, mapping, do)
+            # Validez: python-docx abre el resultado tras el sweep (repack OK)
+            opened = _Doc(do)
+            body_ok = NAME not in "\n".join(p.text for p in opened.paragraphs)
+            meta_ok = (not opened.core_properties.author) and (NAME not in (opened.core_properties.title or ""))
+            check("Word: el .docx resultante sigue siendo válido (abre)", True)
+            check("Word: cuerpo anonimizado", body_ok)
+            check("Word: metadatos (autor vacío, título mapeado)", meta_ok,
+                  f"author={opened.core_properties.author!r}")
+
+            # Sweep de partes ocultas (comentarios/notas/control de cambios/textboxes):
+            # python-docx DESCARTA partes no registradas al guardar, así que probamos
+            # el sweep directamente sobre un .docx que SÍ las contiene (como las que
+            # crea Word real, que python-docx preserva como partes registradas).
+            inj = d / "m.inj.docx"
+            comments_xml = (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                f'<w:comment w:id="1" w:author="x" w:date="2024-01-01T00:00:00Z">'
+                f'<w:p><w:r><w:t>Comentario sobre {NAME}</w:t></w:r></w:p></w:comment></w:comments>'
+            )
+            with _zip.ZipFile(ws_) as zin, _zip.ZipFile(inj, "w", _zip.ZIP_DEFLATED) as zout:
+                for item in zin.namelist():
+                    zout.writestr(item, zin.read(item))
+                zout.writestr("word/comments.xml", comments_xml)
+            _wordmod._sweep_hidden_xml(inj, _Rep(mapping))
+            with _zip.ZipFile(inj) as z:
+                comments_after = z.read("word/comments.xml").decode("utf-8", "ignore")
+            hidden_ok = NAME not in comments_after and CODE in comments_after
+            check("Word: parte oculta (comentario) anonimizada vía XML sweep", hidden_ok,
+                  "" if hidden_ok else f"...{comments_after[-120:]}")
+            # Y que el sweep dejó un .docx válido
+            _Doc(inj)
+            check("Word: el sweep no corrompe el .docx (abre tras repack)", True)
+        except Exception as e:
+            check("Word: cobertura ampliada + validez", False, f"excepción: {e}")
+
+        # --- PPTX: metadatos + hipervínculo de run ---
+        try:
+            from pptx import Presentation as _Pr
+            from pptx.util import Inches as _In
+            prs = _Pr()
+            slide = prs.slides.add_slide(prs.slide_layouts[5])
+            tb = slide.shapes.add_textbox(_In(1), _In(1), _In(5), _In(1))
+            run = tb.text_frame.paragraphs[0].add_run()
+            run.text = "ver web"
+            run.hyperlink.address = f"https://x.local/?c={NAME}"
+            prs.core_properties.author = "Carlos García"
+            prs.core_properties.title = f"Teaser {NAME}"
+            ps = d / "m.pptx"; prs.save(ps)
+            po = d / "m.out.pptx"; formats.apply_replacements(ps, mapping, po)
+            opened = _Pr(po)
+            addr = opened.slides[0].shapes[1].text_frame.paragraphs[0].runs[0].hyperlink.address or ""
+            hl_ok = NAME not in addr
+            meta_ok = (not opened.core_properties.author) and (NAME not in (opened.core_properties.title or ""))
+            check("PPTX: hipervínculo de run anonimizado", hl_ok, f"addr={addr!r}")
+            check("PPTX: metadatos (autor vacío, título mapeado)", meta_ok,
+                  f"author={opened.core_properties.author!r}")
+        except Exception as e:
+            check("PPTX: cobertura ampliada", False, f"excepción: {e}")
+
+        # --- PDF: metadatos limpiados ---
+        try:
+            import fitz as _fitz
+            doc = _fitz.open()
+            page = doc.new_page()
+            page.insert_text((72, 72), f"Cuerpo {NAME}")
+            doc.set_metadata({"author": "Carlos García", "title": f"IM {NAME}",
+                              "subject": NAME, "keywords": "", "creator": "Word",
+                              "producer": "Word"})
+            pf = d / "m.pdf"; doc.save(str(pf)); doc.close()
+            pofd = d / "m.out.pdf"; formats.apply_replacements(pf, mapping, pofd)
+            od = _fitz.open(str(pofd)); md = od.metadata or {}; od.close()
+            meta_ok = (not md.get("author")) and (NAME not in (md.get("title") or "")) and (NAME not in (md.get("subject") or ""))
+            check("PDF: metadatos limpiados (autor vacío, título/asunto sin nombre real)", meta_ok,
+                  f"md={{'author':{md.get('author')!r},'title':{md.get('title')!r}}}")
+        except Exception as e:
+            check("PDF: metadatos limpiados", False, f"excepción: {e}")
+
+
 def print_report():
     print("\n" + "=" * 70)
     print("MÉTRICAS")
@@ -401,5 +537,6 @@ if __name__ == "__main__":
     c7_verify()
     c8_columna_nombre()
     c9_contexto_y_confidencialidad()
+    c10_robustez_formatos()
     all_ok = print_report()
     sys.exit(0 if all_ok else 1)

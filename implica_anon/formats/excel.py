@@ -12,6 +12,7 @@ from openpyxl import load_workbook
 
 from ..replacer import Replacer, replace_in_text
 from ..detectors import CIF_RE, NIF_RE, IBAN_RE
+from ._meta import extract_core_props, scrub_core_props
 
 
 def _is_structured_id(s: str) -> bool:
@@ -77,6 +78,11 @@ def extract_text(path: Path) -> list[str]:
             raise RuntimeError(f"No se pudo abrir el Excel: {e}") from e
 
     try:
+        # Metadatos del libro (autor/título/asunto...) — fuga silenciosa si no se ven.
+        try:
+            texts.extend(extract_core_props(wb.properties, "openpyxl"))
+        except Exception:
+            pass
         for ws in wb.worksheets:
             try:
                 texts.append(ws.title)
@@ -126,6 +132,44 @@ def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> None:
                         new_val, n = replacer.apply(cell.value)
                         if n > 0:
                             cell.value = new_val
+                    # Hipervínculo de la celda (la URL puede llevar un nombre)
+                    try:
+                        hl = cell.hyperlink
+                        if hl is not None and getattr(hl, "target", None):
+                            new_t, nt = replacer.apply(hl.target)
+                            if nt > 0:
+                                hl.target = new_t
+                    except Exception:
+                        pass
+                    # Comentario de la celda
+                    try:
+                        cmt = cell.comment
+                        if cmt is not None and cmt.text:
+                            new_c, nc = replacer.apply(cmt.text)
+                            if nc > 0:
+                                cmt.text = new_c
+                    except Exception:
+                        pass
+
+            # Validaciones de datos (listas desplegables embebidas pueden llevar
+            # nombres: "Mercadona,Carrefour,..."). Las referencias ($A$1:$A$9) se saltan.
+            try:
+                for dv in ws.data_validations.dataValidation:
+                    for fattr in ("formula1", "formula2"):
+                        f = getattr(dv, fattr, None)
+                        if isinstance(f, str) and f.strip() and not f.strip().startswith("$"):
+                            new_f, nf = replacer.apply(f)
+                            if nf > 0:
+                                setattr(dv, fattr, new_f)
+            except Exception:
+                pass
+
+            # Títulos de gráficos
+            try:
+                for chart in getattr(ws, "_charts", []) or []:
+                    _replace_in_chart_title(chart, replacer)
+            except Exception:
+                pass
 
             # Headers/footers
             for hf_attr in ("oddHeader", "oddFooter", "evenHeader", "evenFooter"):
@@ -139,6 +183,36 @@ def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> None:
                         if n > 0:
                             section.text = new_text
 
+        # Metadatos del libro (autor/título/asunto...): identidad → vacío, resto → mapping
+        try:
+            scrub_core_props(wb.properties, replacer, "openpyxl")
+        except Exception:
+            pass
+
         wb.save(str(dst))
     finally:
         wb.close()
+
+
+def _replace_in_chart_title(chart, replacer: Replacer) -> None:
+    """Reemplaza en el título de un gráfico (openpyxl ChartBase). Defensivo:
+    la estructura del título varía (texto plano o rich text con runs)."""
+    try:
+        title = getattr(chart, "title", None)
+        if title is None:
+            return
+        tx = getattr(title, "tx", None)
+        if tx is None:
+            return
+        rich = getattr(tx, "rich", None)
+        if rich is None:
+            return
+        for para in getattr(rich, "p", []) or []:
+            for run in getattr(para, "r", []) or []:
+                t = getattr(run, "t", None)
+                if isinstance(t, str) and t:
+                    new_t, n = replacer.apply(t)
+                    if n > 0:
+                        run.t = new_t
+    except Exception:
+        pass
