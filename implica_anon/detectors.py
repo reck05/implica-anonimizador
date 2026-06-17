@@ -832,8 +832,15 @@ def cluster_variants(
                     in_pgc = True
                     break
                 # Fragmento recortado por spaCy contenido en un nombre completo
-                # autoritativo ("ALMACENES" ⊂ "RIVASALMACENES"). Min 4 chars.
-                if len(nv) >= 4 and any(nv != pn and nv in pn for pn in pgc_compact):
+                # autoritativo ("ALMACENES" ⊂ "RIVASALMACENES"). Solo descartamos si
+                # es RARO (aparece <3 veces) y MUCHO más corto (<60% del nombre
+                # completo): así no perdemos una empresa legítima corta que sea
+                # frecuente o solo algo más corta que otra (p.ej. "Azul" cliente real
+                # vs "Azul Marketing SL"). Prima NO perder cobertura (= no dejar
+                # nombres sin anonimizar) sobre quitar una fila de ruido.
+                if (len(nv) >= 4 and c.total_count < 3
+                        and any(nv != pn and nv in pn and len(nv) < 0.6 * len(pn)
+                                for pn in pgc_compact)):
                     in_pgc = True
                     break
             if in_pgc:

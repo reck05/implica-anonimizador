@@ -300,14 +300,15 @@ def c8_columna_nombre():
     clusters = cluster_variants(cands)
     canon = {cl.canonical for cl in clusters}
     completos = [c for c in casos if c in canon]
-    # No deben quedar fragmentos recortados ("SIRENA SL", "ALMACENES", "AZUL SA")
+    check("tras clustering, los 6 nombres siguen completos", len(completos) == 6,
+          f"{len(completos)}/6")
+    # Nota: algún fragmento de spaCy ("SIRENA SL") puede quedar como fila extra; no
+    # es fuga (el nombre completo está en el mapping y se reemplaza primero) y el
+    # dedup conservador prefiere no arriesgarse a tirar una empresa legítima corta.
     fragmentos = [cl.canonical for cl in clusters
                   if cl.kind in ("ORG", "PER")
                   and any(cl.canonical != c and cl.canonical in c for c in casos)]
-    check("tras clustering, los 6 nombres siguen completos", len(completos) == 6,
-          f"{len(completos)}/6")
-    check("sin fragmentos recortados por spaCy en la tabla", not fragmentos,
-          f"fragmentos={fragmentos}" if fragmentos else "ninguno")
+    print(f"  [info] fragmentos spaCy residuales (ruido, no fuga): {fragmentos or 'ninguno'}")
 
     # Reemplazo end-to-end: ni la columna Cliente ni la Descripción dejan rastro
     mapping = {c: f"[Cliente-{i+1:03d}]" for i, c in enumerate(casos)}
@@ -322,6 +323,48 @@ def c8_columna_nombre():
              if frag.lower() in txt.lower()]
     check("output sin fugas: ningún nombre real sobrevive (Cliente + Descripción)",
           not fugas, f"fugas={fugas}" if fugas else "limpio")
+
+
+def c9_contexto_y_confidencialidad():
+    """Regresión de los fixes del review: contexto distingue truncados, el CIF va
+    enmascarado, y cabeceras 'Nombre' genéricas no se tratan como empresa."""
+    print("\n=== C9. Contexto (distingue truncados) + confidencialidad ===")
+    from implica_anon import accounting
+    from openpyxl import Workbook as _WB
+    wb = _WB(); ws = wb.active
+    ws.append(["Cliente", "CIF", "Importe"])
+    rows = [("CONST. A", "B11111111", "1.200,00"),
+            ("CONST. Y", "B22222222", "3.400,50")]
+    for r in rows:
+        ws.append(r)
+    p = FIX / "ctx_trunc.xlsx"; wb.save(p)
+
+    ctx = accounting.row_contexts(p, {"const. a", "const. y"})
+    ca, cy = ctx.get("const. a", ""), ctx.get("const. y", "")
+    check("contexto distingue dos truncados con mismo prefijo", ca != cy and ca and cy,
+          f"A={ca!r} Y={cy!r}")
+    check("el CIF va ENMASCARADO en el contexto (no aparece completo)",
+          "B11111111" not in ca and "B22222222" not in cy,
+          f"A={ca!r}")
+
+    # Cabecera 'Nombre de contacto' NO debe tratarse como columna de empresa
+    k1 = accounting._name_header_kind("Nombre de contacto")
+    k2 = accounting._name_header_kind("Nombre")
+    k3 = accounting._name_header_kind("Nombre cliente")
+    check("cabecera 'Nombre' / 'Nombre de contacto' no se trata como empresa",
+          k1 is None and k2 is None, f"contacto={k1}, nombre={k2}")
+    check("cabecera 'Nombre cliente' sí se detecta como CLIENTE", k3 == "CLIENTE", f"{k3}")
+
+    # Dedup conservador: empresa corta legítima frecuente NO se descarta por estar
+    # contenida en otra más larga.
+    cands = [
+        Candidate(text="Azul Marketing SL", kind="CLIENTE", count=5, source="column"),
+        Candidate(text="Azul", kind="ORG", count=8, source="ner"),  # cliente real, frecuente
+    ]
+    cl = cluster_variants(cands)
+    canon = {c.canonical for c in cl}
+    check("dedup conservador no tira una empresa corta frecuente ('Azul')",
+          "Azul" in canon, f"canon={sorted(canon)}")
 
 
 def print_report():
@@ -357,5 +400,6 @@ if __name__ == "__main__":
     c6_exportacion(small)
     c7_verify()
     c8_columna_nombre()
+    c9_contexto_y_confidencialidad()
     all_ok = print_report()
     sys.exit(0 if all_ok else 1)

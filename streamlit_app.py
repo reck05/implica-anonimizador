@@ -39,7 +39,9 @@ from implica_anon.interactive import DEFAULT_PLACEHOLDERS, KIND_LABELS
 
 # --- Caché de sesión por proyecto (para "reanudar" tras refresco/reinicio) ---
 # Guarda en local el último análisis (archivos + tabla) para no re-subir.
-# Vive en projects/.cache (gitignored). Contiene datos del cliente → botón para borrar.
+# Vive en projects/.cache (gitignored). ⚠️ Contiene datos del cliente SIN CIFRAR
+# (documento original + nombres reales): úsalo solo en equipos seguros, no en
+# carpetas sincronizadas (OneDrive/Drive), y bórralo al terminar (botón en la UI).
 def _session_cache_path(project: str) -> Path:
     d = mapping_mod.PROJECTS_DIR / ".cache"
     d.mkdir(parents=True, exist_ok=True)
@@ -169,6 +171,11 @@ with st.sidebar:
             cached = _load_session_cache(project)
             if cached:
                 n = len(cached.get("upload_data", []))
+                st.warning(
+                    "⚠️ La caché guarda en disco (sin cifrar) el documento subido y la "
+                    "tabla con nombres reales. Bórrala al terminar y no la dejes en "
+                    "carpetas sincronizadas (OneDrive/Drive)."
+                )
                 if st.button(f"▶️ Reanudar último análisis ({n} archivo/s)",
                              use_container_width=True,
                              help="Recupera el último análisis sin volver a subir el documento."):
@@ -177,6 +184,8 @@ with st.sidebar:
                     st.session_state["proj"] = project
                     st.session_state["is_accounting"] = cached.get("is_accounting", False)
                     st.session_state["clusters_raw"] = cached.get("clusters_raw", [])
+                    # Reconstruir contextos desde el df (no se persiste el dict aparte)
+                    st.session_state["_ctx"] = _contexts_from_df(cached["df"])
                     st.rerun()
                 if st.button("🗑️ Borrar caché de este proyecto", use_container_width=True,
                              help="Elimina del disco el documento y la tabla guardados (confidencialidad)."):
@@ -201,8 +210,10 @@ with st.sidebar:
     st.divider()
 
     # Botón para limpiar estado y empezar de nuevo
-    if st.button("🔄 Empezar de nuevo", use_container_width=True, help="Limpia los archivos cargados y la tabla de candidatos. No borra mappings guardados."):
-        for key in ("df", "upload_data", "proj", "is_accounting", "clusters_raw", "codename_mode_used"):
+    if st.button("🔄 Empezar de nuevo", use_container_width=True, help="Limpia los archivos cargados y la tabla de candidatos (y la caché en disco). No borra mappings guardados."):
+        if project:
+            _clear_session_cache(project)  # evita reanudar contexto/archivo viejo
+        for key in ("df", "upload_data", "proj", "is_accounting", "clusters_raw", "codename_mode_used", "_ctx"):
             st.session_state.pop(key, None)
         st.rerun()
 
@@ -310,6 +321,79 @@ def _build_candidates(all_texts, pgc_entities, named_entities, use_ner: bool):
     candidates.extend(detect_candidates(all_texts, skip_ner=not use_ner))
 
     return cluster_variants(candidates)
+
+
+def _build_contexts(upload_data, wanted_texts) -> dict[str, str]:
+    """Para los nombres detectados, busca una FILA de ejemplo en los Excels
+    subidos (su CIF/importe/factura), para que el usuario distinga nombres
+    truncados o abreviados. Solo aplica a Excel; otros formatos → sin contexto."""
+    wanted = {re.sub(r"\s+", " ", str(t).strip().lower())
+              for t in wanted_texts if t and str(t).strip()}
+    if not wanted:
+        return {}
+    ctx: dict[str, str] = {}
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, data in upload_data:
+                if Path(name).suffix.lower() not in (".xlsx", ".xlsm"):
+                    continue
+                p = Path(tmp) / name
+                p.write_bytes(data)
+                try:
+                    part = accounting.row_contexts(p, wanted)
+                except Exception:
+                    continue
+                for k, v in part.items():
+                    ctx.setdefault(k, v)
+    except Exception:
+        return ctx
+    return ctx
+
+
+def _md_escape(s: str) -> str:
+    """Escapa caracteres que Streamlit interpretaría como markdown/LaTeX, para
+    mostrar texto del documento (que puede traer _ * ` $ [ ] < > etc.) tal cual."""
+    out = []
+    for ch in str(s):
+        if ch in "\\`*_{}[]()#+-.!|<>$":
+            out.append("\\" + ch)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _attach_contexts(df: pd.DataFrame, contexts: dict) -> pd.DataFrame:
+    """Añade/actualiza la columna 'Contexto' (fila de ejemplo en el documento)."""
+    if df is None or df.empty:
+        return df
+    contexts = contexts or {}
+
+    def _ctx_for(row) -> str:
+        variants = row["_variants"]
+        if not isinstance(variants, (list, tuple)):
+            variants = []  # defensivo: pickle corrupto / NaN
+        cands = [re.sub(r"\s+", " ", str(row["Canónico"]).lower())]
+        cands += [re.sub(r"\s+", " ", str(v).lower()) for v in variants]
+        for c in cands:
+            if c in contexts:
+                return contexts[c]
+        return "—"
+
+    df["Contexto"] = [_ctx_for(r) for _, r in df.iterrows()]
+    return df
+
+
+def _contexts_from_df(df) -> dict:
+    """Reconstruye {nombre_lower: contexto} desde la columna 'Contexto' de un df
+    cacheado. Evita persistir el dict de contextos por separado en disco."""
+    if df is None or "Contexto" not in getattr(df, "columns", []):
+        return {}
+    out: dict = {}
+    for _, r in df.iterrows():
+        ctx = str(r.get("Contexto", "") or "").strip()
+        if ctx and ctx != "—":
+            out[re.sub(r"\s+", " ", str(r["Canónico"]).lower())] = ctx
+    return out
 
 
 PGC_KIND_LABELS_SHORT = {
@@ -530,6 +614,11 @@ def _render_merge_suggestions(df_full, project: str) -> None:
             "elige el codename y pulsa **Unificar marcados**. Para añadir uno que no "
             "salga aquí, ponle el mismo codename a mano en la tabla de abajo."
         )
+        st.caption(
+            "⚠️ Si los nombres están **truncados/abreviados** en tu Excel "
+            "(p.ej. `CONST. A`, `CONST. Y`), pueden ser empresas **distintas**. "
+            "Fíjate en el **contexto** (CIF, importe, factura) antes de unir — y si lo son, desmárcalas."
+        )
         for gi, group in enumerate(groups):
             members = [rowid_to_row[rid] for rid in group if rid in rowid_to_row]
             if len(members) < 2:
@@ -537,6 +626,7 @@ def _render_merge_suggestions(df_full, project: str) -> None:
             best = max(members, key=lambda m: m["Ocurrencias"])
             st.markdown("---")
             selected = []
+            seen_ctx = set()
             for m in members:
                 rid = int(m["_rowid"])
                 # Por defecto marcado; el usuario desmarca los que no van
@@ -545,6 +635,14 @@ def _render_merge_suggestions(df_full, project: str) -> None:
                     value=True, key=f"mrg_{gi}_{rid}",
                 ):
                     selected.append(rid)
+                # Contexto: fila de ejemplo del documento (distingue truncados).
+                # Escapamos markdown/LaTeX porque el texto viene del documento y
+                # puede contener _ * ` $ [ ] < > que romperían el render. No repetimos
+                # el mismo contexto si dos variantes salen de la misma fila.
+                ctx = str(m.get("Contexto", "") or "").strip()
+                if ctx and ctx != "—" and ctx not in seen_ctx:
+                    seen_ctx.add(ctx)
+                    st.caption("↳ " + _md_escape(ctx))
             col_t, col_b = st.columns([3, 1])
             target = col_t.text_input(
                 "Codename a aplicar", value=best["Codename"],
@@ -774,15 +872,31 @@ with tab_anon:
         default_mode = "account_full" if is_accounting else "sequential"
         df = _clusters_to_df(clusters, pm, project, codename_mode=default_mode,
                              main_company=main_company)
+        upload_data = [(f.name, f.getvalue()) for f in uploaded]
+        # Contexto: fila de ejemplo (importe/factura, CIF enmascarado) para distinguir
+        # nombres truncados o abreviados. Solo si hay Excel (otros formatos no tienen
+        # filas). El CIF va enmascarado y NO se persiste el dict aparte (va dentro del
+        # df cacheado, que ya contiene la tabla).
+        has_excel = any(Path(n).suffix.lower() in (".xlsx", ".xlsm") for n, _ in upload_data)
+        contexts = {}
+        if has_excel:
+            wanted = set(df["Canónico"].tolist())
+            for vs in df["_variants"].tolist():
+                wanted.update(vs)
+            contexts = _build_contexts(upload_data, wanted)
+            _attach_contexts(df, contexts)
         st.session_state["df"] = df
-        st.session_state["upload_data"] = [(f.name, f.getvalue()) for f in uploaded]
+        st.session_state["upload_data"] = upload_data
         st.session_state["proj"] = project
         st.session_state["is_accounting"] = is_accounting
         st.session_state["main_company"] = main_company
         st.session_state["clusters_raw"] = clusters  # para regenerar si cambia modo
-        # Guardar caché para poder reanudar tras refresco/reinicio sin re-subir
+        st.session_state["_ctx"] = contexts
+        # Guardar caché para poder reanudar tras refresco/reinicio sin re-subir.
+        # NO guardamos el dict de contextos aparte; el df ya lleva la columna
+        # 'Contexto' (con el CIF enmascarado) y de ahí se reconstruye al reanudar.
         _save_session_cache(project, {
-            "upload_data": st.session_state["upload_data"],
+            "upload_data": upload_data,
             "df": df,
             "is_accounting": is_accounting,
             "clusters_raw": clusters,
@@ -821,11 +935,13 @@ with tab_anon:
                 current_mode = st.session_state.get("codename_mode_used", "account_full")
                 if new_mode != current_mode and "clusters_raw" in st.session_state:
                     pm_now = mapping_mod.load(project)
-                    st.session_state["df"] = _clusters_to_df(
+                    df_new = _clusters_to_df(
                         st.session_state["clusters_raw"], pm_now, project,
                         codename_mode=new_mode,
                         main_company=st.session_state.get("main_company", ""),
                     )
+                    df_new = _attach_contexts(df_new, st.session_state.get("_ctx", {}))
+                    st.session_state["df"] = df_new
                     st.session_state["codename_mode_used"] = new_mode
 
         st.caption(
@@ -874,6 +990,11 @@ with tab_anon:
                 "_account_codes": None,
                 "Canónico": st.column_config.TextColumn("Canónico", disabled=True, width="medium"),
                 "Variantes": st.column_config.TextColumn("Variantes", disabled=True, width="medium"),
+                "Contexto": st.column_config.TextColumn(
+                    "Contexto (ejemplo en el doc)", disabled=True, width="large",
+                    help="Una fila real donde aparece este nombre (su CIF/importe/factura). "
+                         "Ayuda a distinguir nombres truncados o abreviados en origen.",
+                ),
                 "Cuenta(s)": st.column_config.TextColumn("Cuenta(s) PGC", disabled=True, width="small"),
                 "Ocurrencias": st.column_config.NumberColumn("#", disabled=True, width="small"),
                 "Codename": st.column_config.TextColumn("Codename →", width="medium"),

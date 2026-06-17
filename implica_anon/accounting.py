@@ -323,6 +323,17 @@ def _name_header_kind(value) -> str | None:
         return None
     if any(x in h for x in NAME_COLUMN_EXCLUDE):
         return None
+    # "nombre" a secas o "nombre de X" genérico es ambiguo: puede ser una columna
+    # de personas/contactos/proyectos, no de empresas. Solo lo aceptamos como
+    # columna de nombre si además aparece cliente/proveedor/empresa/razón/fiscal.
+    if h == "nombre" or (
+        h.startswith("nombre de ")
+        and not any(w in h for w in (
+            "cliente", "proveedor", "empresa", "razón", "razon",
+            "fiscal", "social", "deudor", "acreedor",
+        ))
+    ):
+        return None
     for hints, kind in NAME_COLUMN_HINTS:
         if any(hint in h for hint in hints):
             return kind
@@ -414,6 +425,97 @@ def scan_named_columns(path: Path, max_rows: int = 100_000) -> list[tuple[str, s
                         if key not in seen:
                             seen.add(key)
                             out.append((s, kind))
+            except Exception:
+                # Una hoja problemática no debe tumbar la herramienta.
+                continue
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
+    return out
+
+
+def _redact_ids(s: str) -> str:
+    """Enmascara CIF/NIF/IBAN en una celda dejando solo los últimos dígitos, para
+    que el contexto siga distinguiendo entidades sin exponer el identificador
+    fiscal completo (que se muestra en pantalla y podría cachearse)."""
+    from .detectors import CIF_RE, NIF_RE, IBAN_RE
+    bare = s.replace(" ", "")
+    if CIF_RE.fullmatch(s) or NIF_RE.fullmatch(s):
+        return "···" + s[-3:]
+    if IBAN_RE.fullmatch(bare):
+        return "ES··" + bare[-4:]
+    return s
+
+
+def row_contexts(
+    path: Path,
+    wanted_lower: set[str],
+    *,
+    max_rows: int = 100_000,
+    max_len: int = 120,
+    budget: int = 2_000_000,
+) -> dict[str, str]:
+    """Para cada nombre buscado, devuelve la PRIMERA fila del Excel donde aparece
+    (todas sus celdas unidas y recortadas). Sirve para distinguir nombres
+    truncados/abreviados en origen ('CONST. A' vs 'CONST. Y') por el resto de la
+    fila: su CIF, su importe, su nº de factura, etc.
+
+    `wanted_lower`: conjunto de textos a localizar, EN MINÚSCULAS.
+    Devuelve {texto_lower: 'celda1 · celda2 · …'}.
+
+    `budget` acota el nº de comprobaciones (texto×fila) para no degradar en Excels
+    enormes: si se supera, devuelve lo encontrado hasta ese punto (las entidades
+    frecuentes aparecen en las primeras filas, así que se capturan igual)."""
+    out: dict[str, str] = {}
+    remaining = {w for w in wanted_lower if w}
+    if not remaining:
+        return out
+    try:
+        wb = load_workbook(filename=str(path), data_only=True, read_only=True)
+    except Exception:
+        try:
+            wb = load_workbook(filename=str(path), data_only=False, read_only=True)
+        except Exception:
+            return out
+    comps = 0
+    try:
+        for ws in wb.worksheets:
+            try:
+                n = 0
+                for row in ws.iter_rows(values_only=True):
+                    if not remaining or comps > budget:
+                        return out
+                    if n >= max_rows:
+                        break
+                    n += 1
+                    cells = []
+                    for c in row:
+                        if c is None:
+                            continue
+                        s = str(c).strip()
+                        if s:
+                            cells.append(_redact_ids(s))
+                    if not cells:
+                        continue
+                    rowtext = " · ".join(cells)
+                    # Normalizar espacios para que 'ACME  CORP' (doble espacio) case
+                    # con el nombre buscado 'acme corp'.
+                    low = re.sub(r"\s+", " ", rowtext).lower()
+                    found_here = []
+                    for w in remaining:
+                        comps += 1
+                        if w in low:
+                            found_here.append(w)
+                        if comps > budget:
+                            break
+                    if found_here:
+                        snippet = (rowtext if len(rowtext) <= max_len
+                                   else rowtext[: max_len - 1].rstrip() + "…")
+                        for w in found_here:
+                            out[w] = snippet
+                            remaining.discard(w)
             except Exception:
                 # Una hoja problemática no debe tumbar la herramienta.
                 continue
