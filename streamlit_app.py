@@ -144,6 +144,18 @@ with st.sidebar:
         else:
             project = st.selectbox("Selecciona", existing_projects)
 
+    # Empresa principal del mandato (la de las cuentas): se sustituye por el
+    # codename del proyecto. Si la indicas, NO se adivina por frecuencia.
+    main_company = ""
+    if project:
+        main_company = st.text_input(
+            "Empresa principal (nombre real)",
+            key=f"main_{project}",
+            placeholder="Clínica Dental Sonrisa S.L.",
+            help="La empresa del mandato / de las cuentas. Se reemplaza por el codename "
+                 "del proyecto. Déjalo vacío y el sistema la deduce por frecuencia.",
+        ).strip()
+
     if project:
         pm = mapping_mod.load(project)
         total = sum(len(v) for v in pm.entries.values())
@@ -348,6 +360,7 @@ def _clusters_to_df(
     project: str,
     *,
     codename_mode: str = "account_full",
+    main_company: str = "",
 ) -> pd.DataFrame:
     """Genera tabla deduplicada por canonical text.
 
@@ -367,9 +380,18 @@ def _clusters_to_df(
     # ordenados por frecuencia, la 1ª ORG nueva es la más probable principal.
     project_codename = project.capitalize()
     org_empresa_counter = 0
-    principal_org_asignada = any(
+    main_norm = main_company.strip().lower()
+    # Si el usuario indicó la empresa principal, NO se deduce por frecuencia.
+    principal_org_asignada = (not main_norm) and any(
         cn == project_codename for cn in pm.entries.get("ORG", {}).values()
     )
+
+    def _is_main(c):
+        """¿Este cluster es la empresa principal indicada por el usuario?"""
+        if not main_norm:
+            return False
+        cands = [c.canonical.lower()] + [v.lower() for v in c.variants]
+        return any(main_norm in x or x in main_norm for x in cands)
 
     for c in clusters:
         norm_key = (c.kind, c.canonical.strip().lower())
@@ -401,6 +423,10 @@ def _clusters_to_df(
 
         if existing_codename:
             codename = existing_codename
+        elif _is_main(c):
+            # Empresa principal indicada por el usuario → codename del proyecto
+            codename = project_codename
+            principal_org_asignada = True
         elif c.kind in pgc_kinds and c.account_codes and codename_mode in ("account_full", "account_short"):
             # Codename derivado del código de cuenta
             mode_str = "full" if codename_mode == "account_full" else "short"
@@ -408,9 +434,9 @@ def _clusters_to_df(
         else:
             template = DEFAULT_PLACEHOLDERS.get(c.kind)
             if c.kind == "ORG":
-                # Primera empresa por frecuencia = principal (codename del proyecto).
-                # Las demás son empresas distintas → [Empresa-NNN].
-                if not principal_org_asignada:
+                # Si el usuario NO indicó la principal, la 1ª ORG por frecuencia
+                # se asume principal. Si SÍ la indicó, las demás son [Empresa-NNN].
+                if (not main_norm) and (not principal_org_asignada):
                     codename = project_codename
                     principal_org_asignada = True
                 else:
@@ -434,6 +460,23 @@ def _clusters_to_df(
             "Cuenta(s)": ", ".join(c.account_codes) if c.account_codes else "—",
             "Ocurrencias": c.total_count,
             "Codename": codename,
+        }
+
+    # Garantizar que la empresa principal indicada SIEMPRE se reemplaza, aunque
+    # el detector no la haya encontrado como candidata.
+    if main_norm and not any(r["Codename"] == project_codename for r in seen.values()):
+        seen[("ORG", main_norm)] = {
+            "_rowid": len(seen),
+            "Anonimizar": True,
+            "Tipo": "Empresa",
+            "_kind": "ORG",
+            "Canónico": main_company.strip(),
+            "_variants": [main_company.strip()],
+            "_account_codes": [],
+            "Variantes": "—",
+            "Cuenta(s)": "—",
+            "Ocurrencias": 0,
+            "Codename": project_codename,
         }
 
     rows = list(seen.values())
@@ -694,11 +737,13 @@ with tab_anon:
         pm = mapping_mod.load(project)
         # Por defecto, para libros contables usamos codename basado en código de cuenta completo
         default_mode = "account_full" if is_accounting else "sequential"
-        df = _clusters_to_df(clusters, pm, project, codename_mode=default_mode)
+        df = _clusters_to_df(clusters, pm, project, codename_mode=default_mode,
+                             main_company=main_company)
         st.session_state["df"] = df
         st.session_state["upload_data"] = [(f.name, f.getvalue()) for f in uploaded]
         st.session_state["proj"] = project
         st.session_state["is_accounting"] = is_accounting
+        st.session_state["main_company"] = main_company
         st.session_state["clusters_raw"] = clusters  # para regenerar si cambia modo
         # Guardar caché para poder reanudar tras refresco/reinicio sin re-subir
         _save_session_cache(project, {
@@ -744,6 +789,7 @@ with tab_anon:
                     st.session_state["df"] = _clusters_to_df(
                         st.session_state["clusters_raw"], pm_now, project,
                         codename_mode=new_mode,
+                        main_company=st.session_state.get("main_company", ""),
                     )
                     st.session_state["codename_mode_used"] = new_mode
 
