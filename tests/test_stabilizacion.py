@@ -216,10 +216,16 @@ def c5_unificacion():
 def c6_exportacion(small):
     print("\n=== C6. Exportación ===")
     import tempfile
+    # Regresión: el CIF debe DETECTARSE (no filtrarse en la extracción)
+    cands = detect_candidates(formats.extract_text(small), skip_ner=False)
+    check("CIF se detecta (no se filtra en extracción)",
+          any(c.kind == "CIF" for c in cands),
+          "kinds=" + ",".join(sorted({c.kind for c in cands})))
     pm = mapping_mod.ProjectMapping(project="paradise")
     pm.add("ORG", "Clinica Dental Sonrisa S.L.", "Paradise")
     pm.add("CLIENTE", "Distribuciones Garcia S.L.", "[Cliente-001]")
     pm.add("PROVEEDOR", "Suministros Dentales Ibericos S.L.", "[Proveedor-001]")
+    pm.add("CIF", "B12345678", "[CIF-001]")
     with tempfile.TemporaryDirectory() as tmp:
         dst = Path(tmp) / "out.xlsx"
         result = formats.apply_replacements(small, pm.all_replacements(), dst)
@@ -229,6 +235,7 @@ def c6_exportacion(small):
             str(c.value) for ws in wb.worksheets for row in ws.iter_rows() for c in row if c.value)
         check("la empresa principal queda reemplazada por el codename", "Paradise" in txt)
         check("cliente reemplazado con su categoría", "[Cliente-001]" in txt)
+        check("CIF reemplazado en el output", "[CIF-001]" in txt and "B12345678" not in txt)
         check("nombre real de la principal NO sobrevive", "Clinica Dental Sonrisa" not in txt)
         check("verify pass confirma limpio (sin las entidades del mapping)", result.is_clean,
               f"surviving={result.surviving}, verifiable={result.verifiable}")

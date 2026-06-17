@@ -11,6 +11,13 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 from ..replacer import Replacer, replace_in_text
+from ..detectors import CIF_RE, NIF_RE, IBAN_RE
+
+
+def _is_structured_id(s: str) -> bool:
+    """¿La celda es un CIF/NIF/IBAN? Son identificadores que SÍ hay que anonimizar,
+    así que nunca deben filtrarse como 'artefacto'."""
+    return bool(CIF_RE.fullmatch(s) or NIF_RE.fullmatch(s) or IBAN_RE.fullmatch(s.replace(" ", "")))
 
 
 def _looks_like_formula_or_ref(text: str) -> bool:
@@ -19,6 +26,9 @@ def _looks_like_formula_or_ref(text: str) -> bool:
     if not text:
         return False
     s = text.strip()
+    # Nunca descartar identificadores (CIF/NIF/IBAN): son datos a anonimizar.
+    if _is_structured_id(s):
+        return False
     if s.startswith("="):
         return True
     # Funciones Excel comunes (con paréntesis sin cerrar = fragmento roto)
