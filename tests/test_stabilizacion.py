@@ -152,6 +152,15 @@ def c3_persistencia():
           and list(loaded["df"]["Codename"]) == ["Paradise"])
     check("reanudar recupera análisis (archivo + tabla + codename editado)", ok)
     METRICS["reanudar_ok"] = ok
+
+    # Simular edición manual + re-guardado (como hace la UI tras editar/unificar)
+    df.loc[0, "Codename"] = "Eden"          # el usuario cambia el codename
+    payload["df"] = df
+    app._save_session_cache(proj, payload)  # la UI re-guarda tras el cambio
+    loaded2 = app._load_session_cache(proj)
+    check("ediciones/merges persisten tras refrescar (no se pierden)",
+          loaded2 is not None and list(loaded2["df"]["Codename"]) == ["Eden"])
+
     app._clear_session_cache(proj)
     cleared = app._load_session_cache(proj) is None
     check("borrar caché funciona", cleared)

@@ -857,6 +857,15 @@ with tab_anon:
                     df_full.loc[full_idx[0], "Tipo"] = row["Tipo"]
                     df_full.loc[full_idx[0], "_kind"] = TIPO_TO_KIND.get(row["Tipo"], "ORG")
         st.session_state["df"] = df_full
+        # Persistir el estado ACTUAL (ediciones de codename/tipo + merges aplicados)
+        # para que "Reanudar" tras un refresco conserve los cambios manuales.
+        if "upload_data" in st.session_state:
+            _save_session_cache(project, {
+                "upload_data": st.session_state["upload_data"],
+                "df": df_full,
+                "is_accounting": st.session_state.get("is_accounting", False),
+                "clusters_raw": st.session_state.get("clusters_raw", []),
+            })
 
         if st.button("✅ Anonimizar y descargar", type="primary"):
             with st.spinner("Aplicando reemplazos y verificando..."):
