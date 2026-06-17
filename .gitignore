@@ -39,6 +39,11 @@ real/
 *.log
 logs/
 
+# --- Salidas generadas por el benchmark (se regeneran al ejecutarlo) ---
+benchmark_resultado.md
+benchmark_resultado.csv
+benchmark_resultado.json
+
 # --- IDE ---
 .vscode/
 .idea/
