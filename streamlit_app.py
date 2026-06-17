@@ -495,7 +495,13 @@ def _render_merge_suggestions(df_full, project: str) -> None:
         for _, r in df_full.iterrows()
     ]
     groups = suggest_unifications(entries)
+    # Confirmación de la última unificación (sobrevive al rerun vía session_state)
+    if st.session_state.get("_merge_msg"):
+        st.success(st.session_state.pop("_merge_msg"))
     if not groups:
+        if not st.session_state.get("_merge_done"):
+            return
+        st.caption("✅ No quedan duplicados pendientes de unificar.")
         return
 
     rowid_to_row = {int(r["_rowid"]): r for _, r in df_full.iterrows()}
@@ -528,11 +534,22 @@ def _render_merge_suggestions(df_full, project: str) -> None:
             )
             if col_b.button("Unificar marcados", key=f"mrgb_{gi}"):
                 if len(selected) >= 1 and target.strip():
+                    nombres = [rowid_to_row[r]["Canónico"] for r in selected if r in rowid_to_row]
                     for rid in selected:
                         idx = df_full[df_full["_rowid"] == rid].index
                         if len(idx) > 0:
                             df_full.loc[idx[0], "Codename"] = target.strip()
                     st.session_state["df"] = df_full
+                    # Mensaje de confirmación que se mostrará tras el rerun
+                    st.session_state["_merge_msg"] = (
+                        f"✅ Unificados {len(selected)} nombres → «{target.strip()}»: "
+                        + ", ".join(nombres[:5]) + ("…" if len(nombres) > 5 else "")
+                    )
+                    st.session_state["_merge_done"] = True
+                    try:
+                        st.toast(f"Unificados {len(selected)} → {target.strip()}")
+                    except Exception:
+                        pass
                     st.rerun()
                 else:
                     st.warning("Marca al menos un nombre y escribe un codename.")

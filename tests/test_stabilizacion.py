@@ -259,6 +259,11 @@ def c7_verify():
     check("verify detecta entidad que sobrevivió (no falso OK)", "Mercadona" in surviv)
     # Output limpio → sin supervivientes
     check("verify no inventa fugas en output limpio", r.find_surviving("Factura de [Cliente-1]") == [])
+    # Fragmentos cortos / substrings NO deben dar falso positivo
+    r2 = Replacer({"CON": "[X]", "ALE": "[Y]", "CONSTR": "[Z]"})
+    fp = r2.find_surviving("Construcciones varias con alegria y [Z]")  # 'con','ale','constr' como substrings
+    check("verify NO marca fragmentos cortos/substrings (CON, ALE dentro de palabras)",
+          fp == [], f"falsos positivos={fp}")
 
 
 def print_report():

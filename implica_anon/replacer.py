@@ -66,15 +66,28 @@ class Replacer:
         return self._pattern.sub(_sub, text), count
 
     def find_surviving(self, text: str) -> list[str]:
-        """Devuelve los originales que SIGUEN presentes en `text` (case-insensitive).
+        """Devuelve los originales que SIGUEN presentes en `text` como PALABRA COMPLETA.
 
         Se usa para verificar tras anonimizar que ningún nombre real quedó visible.
         Lista vacía = anonimización limpia.
+
+        Coincidencia por palabra completa (igual que el reemplazo), NO substring:
+        antes "CON" se encontraba dentro de "construcciones" o de la palabra "con"
+        y daba decenas de falsos positivos. Además se ignoran fragmentos de < 4
+        caracteres: son demasiado cortos para verificarse de forma fiable.
         """
         if not text:
             return []
         low = text.lower()
-        return [o for o in self._originals if o.lower() in low]
+        out = []
+        for o in self._originals:
+            ol = o.strip().lower()
+            if len(ol) < 4:
+                continue  # fragmentos cortos no verificables (evita falsos positivos)
+            # palabra/token completo: sin carácter alfanumérico pegado a los lados
+            if re.search(r"(?<![0-9a-zñáéíóú])" + re.escape(ol) + r"(?![0-9a-zñáéíóú])", low):
+                out.append(o)
+        return out
 
 
 def replace_in_text(text: str, mapping) -> tuple[str, int]:
