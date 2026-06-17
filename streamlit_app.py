@@ -39,19 +39,63 @@ from implica_anon.interactive import DEFAULT_PLACEHOLDERS, KIND_LABELS
 
 # --- Caché de sesión por proyecto (para "reanudar" tras refresco/reinicio) ---
 # Guarda en local el último análisis (archivos + tabla) para no re-subir.
-# Vive en projects/.cache (gitignored). ⚠️ Contiene datos del cliente SIN CIFRAR
-# (documento original + nombres reales): úsalo solo en equipos seguros, no en
-# carpetas sincronizadas (OneDrive/Drive), y bórralo al terminar (botón en la UI).
+# Vive en projects/.cache (gitignored) y va CIFRADA con Fernet (AES). La LLAVE se
+# guarda en %LOCALAPPDATA% (fuera del proyecto): así, aunque la caché cifrada se
+# sincronice a OneDrive/Drive, nadie sin TU equipo puede abrirla. Si falta el
+# paquete 'cryptography', NO se escribe nada (jamás se vuelca cliente en claro).
+# Aun así, bórrala al terminar (botón en la UI).
 def _session_cache_path(project: str) -> Path:
     d = mapping_mod.PROJECTS_DIR / ".cache"
     d.mkdir(parents=True, exist_ok=True)
     return d / f"{project.lower()}.session.pkl"
 
 
-def _save_session_cache(project: str, payload: dict) -> None:
+def _cache_key_path() -> Path:
+    """Ruta de la llave de cifrado, FUERA de la carpeta del proyecto para que no
+    se sincronice junto con la caché (LOCALAPPDATA en Windows; ~ como fallback)."""
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME") or str(Path.home())
+    d = Path(base) / "implica-anonimizador"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "cache.key"
+
+
+_CIPHER = None
+_CIPHER_TRIED = False
+
+
+def _get_cipher():
+    """Devuelve un Fernet (cifrado simétrico autenticado) o None si 'cryptography'
+    no está disponible. La llave se crea una vez y vive solo en este equipo."""
+    global _CIPHER, _CIPHER_TRIED
+    if _CIPHER_TRIED:
+        return _CIPHER
+    _CIPHER_TRIED = True
     try:
+        from cryptography.fernet import Fernet
+        kp = _cache_key_path()
+        if kp.exists():
+            key = kp.read_bytes()
+        else:
+            key = Fernet.generate_key()
+            kp.write_bytes(key)
+            try:
+                os.chmod(kp, 0o600)  # solo el usuario (best-effort en Windows)
+            except Exception:
+                pass
+        _CIPHER = Fernet(key)
+    except Exception:
+        _CIPHER = None
+    return _CIPHER
+
+
+def _save_session_cache(project: str, payload: dict) -> None:
+    cipher = _get_cipher()
+    if cipher is None:
+        return  # fail-safe: sin cifrado NO escribimos datos de cliente en claro
+    try:
+        blob = cipher.encrypt(pickle.dumps(payload))
         with _session_cache_path(project).open("wb") as f:
-            pickle.dump(payload, f)
+            f.write(blob)
     except Exception:
         pass  # best-effort, nunca rompe el flujo
 
@@ -61,8 +105,20 @@ def _load_session_cache(project: str):
     if not p.exists():
         return None
     try:
-        with p.open("rb") as f:
-            return pickle.load(f)
+        data = p.read_bytes()
+    except Exception:
+        return None
+    cipher = _get_cipher()
+    if cipher is not None:
+        try:
+            # Fernet autentica: si descifra, el contenido no se ha manipulado.
+            return pickle.loads(cipher.decrypt(data))
+        except Exception:
+            pass
+    # Compatibilidad: caché antigua sin cifrar (pickle plano). Se re-cifra al
+    # siguiente guardado.
+    try:
+        return pickle.loads(data)
     except Exception:
         return None
 
@@ -171,10 +227,10 @@ with st.sidebar:
             cached = _load_session_cache(project)
             if cached:
                 n = len(cached.get("upload_data", []))
-                st.warning(
-                    "⚠️ La caché guarda en disco (sin cifrar) el documento subido y la "
-                    "tabla con nombres reales. Bórrala al terminar y no la dejes en "
-                    "carpetas sincronizadas (OneDrive/Drive)."
+                st.caption(
+                    "🔒 La caché va **cifrada** en disco y la llave solo está en este "
+                    "equipo (no se sincroniza). Aun así, bórrala al terminar si el "
+                    "equipo es compartido."
                 )
                 if st.button(f"▶️ Reanudar último análisis ({n} archivo/s)",
                              use_container_width=True,

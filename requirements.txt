@@ -9,6 +9,7 @@ pymupdf>=1.24.0
 spacy>=3.7.0,<4.0.0
 rapidfuzz>=3.6.0
 pydantic>=2.6.0
+cryptography>=42.0.0
 
 # El modelo es_core_news_md se descarga en runtime la primera vez (ver detectors.py).
 # No lo añadimos aquí como wheel URL porque algunos hosts (Streamlit Cloud, etc.)
