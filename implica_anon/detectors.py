@@ -602,17 +602,31 @@ def suggest_unifications(entries: list[tuple]) -> list[list]:
     2+ miembros del mismo kind que parecen la misma empresa pero que el
     clustering automático no unió. El usuario decide si unificarlos.
     """
+    # Índice por bloque (kind + primeros 2 chars del nombre normalizado) para no
+    # comparar todos contra todos en cada rerun de la UI. Casi O(n).
+    norm_map: dict = {}
+    by_block: dict = defaultdict(list)
+    order: list = []
+    for id_, kind, name in entries:
+        nm = normalize_org(name)
+        norm_map[id_] = (kind, name, nm)
+        order.append(id_)
+        if nm:
+            by_block[(kind, nm[:2])].append(id_)
+
     groups: list[list] = []
     used: set = set()
-    for i, (id_a, kind_a, name_a) in enumerate(entries):
+    for id_a in order:
         if id_a in used:
             continue
+        kind_a, name_a, nm_a = norm_map[id_a]
+        if not nm_a:
+            continue
         group = [id_a]
-        for j in range(i + 1, len(entries)):
-            id_b, kind_b, name_b = entries[j]
-            if id_b in used or kind_b != kind_a:
+        for id_b in by_block.get((kind_a, nm_a[:2]), ()):  # solo el mismo bloque
+            if id_b == id_a or id_b in used:
                 continue
-            if _maybe_same_entity(name_a, name_b):
+            if _maybe_same_entity(name_a, norm_map[id_b][1]):
                 group.append(id_b)
         if len(group) > 1:
             groups.append(group)
@@ -693,52 +707,55 @@ def cluster_variants(
                 )
             continue
 
-        # Para ORG-like/PER-like: fuzzy clustering greedy
+        # Para ORG-like/PER-like: fuzzy clustering con ÍNDICE POR BLOQUES.
+        # En vez de comparar cada nombre contra todos (O(n²) + normalizar en cada
+        # comparación, que colgaba el servidor con cientos de nombres), normalizamos
+        # UNA vez y solo comparamos contra clusters del mismo bloque (primeros 2
+        # caracteres del nombre normalizado) y de longitud parecida → casi O(n).
         is_org_like = kind in org_like_kinds
         normalize = normalize_org if is_org_like else normalize_person
         items_sorted = sorted(items, key=lambda c: (-len(c.text), -c.count))
         clusters_for_kind: list[Cluster] = []
+        blocks: dict[str, list[dict]] = defaultdict(list)  # bkey -> [{cluster, norm}]
 
         for cand in items_sorted:
             norm = normalize(cand.text)
             if not norm:
                 continue
-            # Si después de normalizar quedan menos de 4 chars (palabras genéricas
-            # como "asociados" tras quitar sufijo), saltar al cluster propio sin
-            # hacer fuzzy match — evita falsas fusiones.
+            # Menos de 5 chars tras normalizar (genéricos como "asociados" sin sufijo)
+            # → cluster propio sin fuzzy, evita falsas fusiones.
             skip_fuzzy = len(norm) < 5
 
             matched = None
             if not skip_fuzzy:
-                for cluster in clusters_for_kind:
-                    for variant in cluster.variants:
-                        norm_variant = normalize(variant)
-                        # Doble verificación: token_sort_ratio Y ratio simple.
-                        # token_set_ratio es muy permisivo; lo evitamos.
-                        sort_score = fuzz.token_sort_ratio(norm, norm_variant)
-                        simple_score = fuzz.ratio(norm, norm_variant)
-                        if sort_score >= threshold and simple_score >= (threshold - 10):
-                            matched = cluster
-                            break
-                    if matched:
+                bkey = norm[:2]
+                for entry in blocks.get(bkey, ()):  # solo el mismo bloque
+                    cn = entry["norm"]  # norm del canónico, ya cacheado
+                    if abs(len(cn) - len(norm)) > 6:
+                        continue  # longitudes muy dispares → no es variante
+                    if (fuzz.token_sort_ratio(norm, cn) >= threshold
+                            and fuzz.ratio(norm, cn) >= threshold - 10):
+                        matched = entry
                         break
             if matched:
-                matched.variants.append(cand.text)
-                matched.total_count += cand.count
-                if cand.account_code and cand.account_code not in matched.account_codes:
-                    matched.account_codes.append(cand.account_code)
-                if len(cand.text) > len(matched.canonical):
-                    matched.canonical = cand.text
+                cl = matched["cluster"]
+                cl.variants.append(cand.text)
+                cl.total_count += cand.count
+                if cand.account_code and cand.account_code not in cl.account_codes:
+                    cl.account_codes.append(cand.account_code)
+                if len(cand.text) > len(cl.canonical):
+                    cl.canonical = cand.text  # el canónico cambia, su norm no re-indexa
             else:
-                clusters_for_kind.append(
-                    Cluster(
-                        kind=kind,
-                        canonical=cand.text,
-                        variants=[cand.text],
-                        total_count=cand.count,
-                        account_codes=[cand.account_code] if cand.account_code else [],
-                    )
+                cl = Cluster(
+                    kind=kind,
+                    canonical=cand.text,
+                    variants=[cand.text],
+                    total_count=cand.count,
+                    account_codes=[cand.account_code] if cand.account_code else [],
                 )
+                clusters_for_kind.append(cl)
+                if not skip_fuzzy:
+                    blocks[norm[:2]].append({"cluster": cl, "norm": norm})
 
         clusters.extend(clusters_for_kind)
 
