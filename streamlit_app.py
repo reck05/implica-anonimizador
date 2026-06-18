@@ -274,6 +274,31 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
+    with st.expander("⚙️ Motores opcionales (avanzado)"):
+        st.caption(
+            "Capas extra de detección, **locales** (no sale nada de la máquina). "
+            "Si las activas, vuelve a pulsar **Analizar**."
+        )
+        st.checkbox(
+            "🧠 Reforzar nombres de persona (Presidio)",
+            key="opt_presidio",
+            help="Usa Microsoft Presidio sobre el mismo spaCy local para capturar "
+                 "nombres de PERSONA completos en documentos narrativos (Word/PPT/PDF). "
+                 "Algo más lento. No afecta a sumas y saldos.",
+        )
+        try:
+            from implica_anon.formats import pdf as _pdf_mod
+            _ocr_ready = _pdf_mod.ocr_available()
+        except Exception:
+            _ocr_ready = False
+        st.checkbox(
+            "🖼️ OCR para PDFs escaneados" + ("" if _ocr_ready else " (requiere Tesseract)"),
+            key="opt_ocr", disabled=not _ocr_ready,
+            help="Lee PDFs escaneados (imágenes) para DETECTAR nombres. Requiere el "
+                 "binario Tesseract instalado. Si no está, esta opción aparece deshabilitada.",
+        )
+
+    st.divider()
     st.caption(
         "🛡️ Confidencialidad: nada sale de esta máquina. "
         "Los mappings (`projects/<codename>.json`) son sólo nombres↔codenames, "
@@ -643,8 +668,9 @@ def _clusters_to_df(
 
 
 def _render_merge_suggestions(df_full, project: str) -> None:
-    """Muestra grupos de candidatos que PODRÍAN ser la misma entidad y permite
-    unificarlos (darles el mismo codename) con un botón. Cubre el caso
+    """Sugerencias de unificación de duplicados. Para cada candidato eliges a qué
+    grupo/codename unirlo (puedes MOVERLO a otro grupo) o «❌ No unir», y luego
+    pulsas **Unificar todas** para aplicarlas de golpe. Cubre el caso
     'Mercadona' / 'Mercad' / 'Merca' que el clustering estricto no une solo."""
     from implica_anon.detectors import suggest_unifications
 
@@ -663,68 +689,95 @@ def _render_merge_suggestions(df_full, project: str) -> None:
         return
 
     rowid_to_row = {int(r["_rowid"]): r for _, r in df_full.iterrows()}
-    with st.expander(f"💡 {len(groups)} posible(s) duplicado(s) — revisa y unifica",
-                     expanded=len(groups) <= 12):
-        st.caption(
-            "Marca solo los que SÍ son la misma empresa (desmarca los que no encajen), "
-            "elige el codename y pulsa **Unificar marcados**. Para añadir uno que no "
-            "salga aquí, ponle el mismo codename a mano en la tabla de abajo."
-        )
-        st.caption(
-            "⚠️ Si los nombres están **truncados/abreviados** en tu Excel "
-            "(p.ej. `CONST. A`, `CONST. Y`), pueden ser empresas **distintas**. "
-            "Fíjate en el **contexto** (CIF, importe, factura) antes de unir — y si lo son, desmárcalas."
-        )
-        for gi, group in enumerate(groups):
-            members = [rowid_to_row[rid] for rid in group if rid in rowid_to_row]
-            if len(members) < 2:
-                continue
+    # Solo grupos con 2+ miembros presentes
+    valid = []
+    for gi, group in enumerate(groups):
+        members = [rowid_to_row[rid] for rid in group if rid in rowid_to_row]
+        if len(members) >= 2:
             best = max(members, key=lambda m: m["Ocurrencias"])
-            st.markdown("---")
-            selected = []
+            valid.append({"gi": gi, "members": members, "default": best["Codename"],
+                          "rep": str(best["Canónico"])})
+    if not valid:
+        return
+
+    with st.expander(f"💡 {len(valid)} posible(s) duplicado(s) — revisa y unifica",
+                     expanded=len(valid) <= 12):
+        st.caption(
+            "Para cada nombre elige **a qué codename unirlo** en el desplegable "
+            "(puedes **moverlo a otro grupo** o dejarlo en **❌ No unir**), y pulsa "
+            "**Unificar todas**. El codename de cada grupo es editable arriba."
+        )
+        st.caption(
+            "⚠️ Si los nombres están **truncados/abreviados** (p.ej. `CONST. A`, "
+            "`CONST. Y`), pueden ser empresas **distintas**: mira el **contexto** "
+            "(CIF, importe, factura) antes de unir."
+        )
+
+        # 1) Codename editable por grupo
+        for g in valid:
+            g["target"] = st.text_input(
+                f"Codename del grupo {g['gi'] + 1}  ·  {g['rep']}",
+                value=g["default"], key=f"grpcn_{g['gi']}",
+            )
+
+        target_by_gi = {g["gi"]: (g["target"] or "").strip() for g in valid}
+        rep_by_gi = {g["gi"]: g["rep"] for g in valid}
+        gi_opts = [g["gi"] for g in valid] + [None]  # None = ❌ No unir
+
+        def _fmt(gi):
+            if gi is None:
+                return "❌ No unir"
+            return f"→ {target_by_gi.get(gi, '')}  ({rep_by_gi.get(gi, '')[:22]})"
+
+        # 2) Un desplegable por candidato: a qué grupo/codename va (o no unir).
+        #    Las opciones se identifican por índice de grupo (estable aunque se
+        #    edite el codename), así que mover ≡ elegir otro grupo.
+        st.markdown("---")
+        for g in valid:
             seen_ctx = set()
-            for m in members:
+            for m in g["members"]:
                 rid = int(m["_rowid"])
-                # Por defecto marcado; el usuario desmarca los que no van
-                if st.checkbox(
-                    f"{m['Canónico']}  ·  {m['Ocurrencias']}×  ({m['Codename']})",
-                    value=True, key=f"mrg_{gi}_{rid}",
-                ):
-                    selected.append(rid)
-                # Contexto: fila de ejemplo del documento (distingue truncados).
-                # Escapamos markdown/LaTeX porque el texto viene del documento y
-                # puede contener _ * ` $ [ ] < > que romperían el render. No repetimos
-                # el mismo contexto si dos variantes salen de la misma fila.
+                st.selectbox(
+                    f"{m['Canónico']}  ·  {m['Ocurrencias']}×",
+                    options=gi_opts, index=gi_opts.index(g["gi"]),
+                    format_func=_fmt, key=f"asg_{rid}",
+                )
                 ctx = str(m.get("Contexto", "") or "").strip()
                 if ctx and ctx != "—" and ctx not in seen_ctx:
                     seen_ctx.add(ctx)
                     st.caption("↳ " + _md_escape(ctx))
-            col_t, col_b = st.columns([3, 1])
-            target = col_t.text_input(
-                "Codename a aplicar", value=best["Codename"],
-                key=f"mrgt_{gi}", label_visibility="collapsed",
-            )
-            if col_b.button("Unificar marcados", key=f"mrgb_{gi}"):
-                if len(selected) >= 1 and target.strip():
-                    nombres = [rowid_to_row[r]["Canónico"] for r in selected if r in rowid_to_row]
-                    for rid in selected:
-                        idx = df_full[df_full["_rowid"] == rid].index
-                        if len(idx) > 0:
-                            df_full.loc[idx[0], "Codename"] = target.strip()
-                    st.session_state["df"] = df_full
-                    # Mensaje de confirmación que se mostrará tras el rerun
-                    st.session_state["_merge_msg"] = (
-                        f"✅ Unificados {len(selected)} nombres → «{target.strip()}»: "
-                        + ", ".join(nombres[:5]) + ("…" if len(nombres) > 5 else "")
-                    )
-                    st.session_state["_merge_done"] = True
-                    try:
-                        st.toast(f"Unificados {len(selected)} → {target.strip()}")
-                    except Exception:
-                        pass
-                    st.rerun()
-                else:
-                    st.warning("Marca al menos un nombre y escribe un codename.")
+
+        # 3) Aplicar TODAS las asignaciones de una vez
+        if st.button("✅ Unificar todas", type="primary", key="mrg_all"):
+            applied, nombres = 0, []
+            for g in valid:
+                for m in g["members"]:
+                    rid = int(m["_rowid"])
+                    sel = st.session_state.get(f"asg_{rid}", g["gi"])
+                    if sel is None:
+                        continue
+                    codename = target_by_gi.get(sel, "").strip()
+                    if not codename:
+                        continue
+                    idx = df_full[df_full["_rowid"] == rid].index
+                    if len(idx) > 0:
+                        df_full.loc[idx[0], "Codename"] = codename
+                        applied += 1
+                        nombres.append(str(m["Canónico"]))
+            if applied:
+                st.session_state["df"] = df_full
+                st.session_state["_merge_msg"] = (
+                    f"✅ Aplicadas {applied} unión(es): "
+                    + ", ".join(nombres[:6]) + ("…" if len(nombres) > 6 else "")
+                )
+                st.session_state["_merge_done"] = True
+                try:
+                    st.toast(f"{applied} unión(es) aplicada(s)")
+                except Exception:
+                    pass
+                st.rerun()
+            else:
+                st.warning("Todo está en «❌ No unir» (o sin codename). Elige al menos un destino.")
 
 
 def _df_to_mapping(df: pd.DataFrame, project: str) -> mapping_mod.ProjectMapping:
@@ -834,6 +887,16 @@ with tab_anon:
     doctype_forced = doctype_override[0]
 
     if st.button("🔍 Analizar", type="primary"):
+        # Motores opcionales según los toggles del sidebar (capas locales). Se fijan
+        # ANTES de extraer/detectar: OCR actúa en la extracción; Presidio en la detección.
+        if st.session_state.get("opt_presidio"):
+            os.environ["IMPLICA_ENABLE_PRESIDIO"] = "true"
+        else:
+            os.environ.pop("IMPLICA_ENABLE_PRESIDIO", None)
+        if st.session_state.get("opt_ocr"):
+            os.environ["IMPLICA_ENABLE_OCR"] = "true"
+        else:
+            os.environ.pop("IMPLICA_ENABLE_OCR", None)
         try:
             with st.spinner("Detectando tipo de documento..."):
                 all_texts, pgc_entities, named_entities, doctypes, errors = _scan_files(uploaded)
