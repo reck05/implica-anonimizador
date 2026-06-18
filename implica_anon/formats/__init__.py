@@ -88,13 +88,21 @@ def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> VerifyR
             "o pásalo antes por un OCR."
         )
 
-    # Aviso de imágenes en PDF (los nombres dentro de imágenes no se anonimizan)
+    # Aviso de imágenes (PDF y PPTX): los nombres DENTRO de una imagen no se anonimizan
     if dst.suffix.lower() == ".pdf":
         n_imgs = pdf.count_images(dst)
         if n_imgs:
             result.warnings.append(
                 f"El PDF contiene {n_imgs} imagen(es). Si algún nombre aparece DENTRO "
                 "de una imagen (logo, captura, escaneo), NO se anonimiza. Revísalas."
+            )
+    elif dst.suffix.lower() == ".pptx":
+        n_imgs = pptx_mod.count_images(dst)
+        if n_imgs:
+            result.warnings.append(
+                f"La presentación contiene {n_imgs} imagen(es). Si algún nombre aparece "
+                "DENTRO de una imagen (logo, captura, gráfico rasterizado), NO se "
+                "anonimiza. Revísalas."
             )
         # Truncamiento por límite de páginas: lo que está más allá NO se procesó
         # NI se verificó → no demos un falso "OK".

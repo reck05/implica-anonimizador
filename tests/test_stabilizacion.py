@@ -629,6 +629,49 @@ def c14_relation_hint():
     check("fallback cuando no hay código/cuenta/prefijo claro", bool(h4.strip()), h4)
 
 
+def c15_pptx_graficos():
+    """Loop robustez: barrido XML de PPTX cubre el texto de GRÁFICOS (categorías/
+    títulos) y deja la presentación válida; + aviso de imágenes."""
+    print("\n=== C15. PPTX: gráficos/SmartArt vía barrido XML ===")
+    import tempfile as _tmp, zipfile as _zip
+    from pathlib import Path as _P
+    NAME = "Global Menta S.L."
+    try:
+        from pptx import Presentation as _Pr
+        from pptx.util import Inches as _In
+        from pptx.chart.data import CategoryChartData as _CCD
+        from pptx.enum.chart import XL_CHART_TYPE as _XL
+        from implica_anon.formats import pptx as _pmod
+
+        prs = _Pr()
+        slide = prs.slides.add_slide(prs.slide_layouts[5])
+        data = _CCD()
+        data.categories = [NAME, "Otra Empresa SA"]
+        data.add_series("Ventas", (10.0, 20.0))
+        slide.shapes.add_chart(_XL.COLUMN_CLUSTERED, _In(1), _In(1), _In(6), _In(4), data)
+        with _tmp.TemporaryDirectory() as d:
+            src = _P(d) / "g.pptx"; prs.save(src)
+            # El nombre debe extraerse (para que entre al mapping) desde el gráfico
+            extracted = " ".join(formats.extract_text(src))
+            check("PPTX: el nombre del gráfico se EXTRAE (detectable)", NAME in extracted,
+                  "" if NAME in extracted else "no extraído")
+            dst = _P(d) / "g.out.pptx"
+            formats.apply_replacements(src, {NAME: "Paradise"}, dst)
+            # 1) abre sin corromperse
+            _Pr(dst)
+            # 2) el nombre ya no está en NINGÚN XML del .pptx
+            leaked = False
+            with _zip.ZipFile(dst) as z:
+                for n in z.namelist():
+                    if n.endswith(".xml") and NAME.encode("utf-8") in z.read(n):
+                        leaked = True; break
+            check("PPTX: gráfico anonimizado (nombre fuera de todo el XML)", not leaked)
+            check("PPTX: la presentación sigue siendo válida tras el barrido", True)
+            check("PPTX: count_images no lanza", isinstance(_pmod.count_images(dst), int))
+    except Exception as e:
+        check("PPTX: cobertura de gráficos", False, f"excepción: {e}")
+
+
 def print_report():
     print("\n" + "=" * 70)
     print("MÉTRICAS")
@@ -668,5 +711,6 @@ if __name__ == "__main__":
     c12_presidio_opcional()
     c13_ocr_opcional()
     c14_relation_hint()
+    c15_pptx_graficos()
     all_ok = print_report()
     sys.exit(0 if all_ok else 1)
