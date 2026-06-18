@@ -770,6 +770,50 @@ def c17_excel_inteligencia():
         check("Excel: sinónimos + contenido", False, f"excepción: {e}")
 
 
+def c18_excel_codigo_nombre_combinado():
+    """Loop Excel: 'código nombre' en la MISMA celda (Holded/manual) se detecta,
+    separa y anonimiza, dejando el código intacto."""
+    print("\n=== C18. Excel: código+nombre en una celda ===")
+    from implica_anon import accounting as A
+    from implica_anon.detectors import candidates_from_pgc
+    try:
+        from openpyxl import Workbook as _WB, load_workbook as _LW
+        import tempfile as _tmp
+        from pathlib import Path as _P
+        wb = _WB(); ws = wb.active
+        ws.append(["Movimientos"])  # cabecera no estándar
+        combos = [
+            "4300001 GLOBAL MENTA SL", "4300002 DISTRIBUCIONES BADIA SL",
+            "4000001 PROVEEDORA IBERICA SA", "4300003 TALLERES IBERIA SL",
+            "4300004 FRUTAS CARINENA SL", "4000002 SUMINISTROS LOPEZ SL",
+        ]
+        for c in combos:
+            ws.append([c])
+        with _tmp.TemporaryDirectory() as d:
+            p = _P(d) / "combo.xlsx"; wb.save(p)
+            scan = A.scan_workbook(p)
+            check("detecta 'código nombre' combinado como contable", scan.is_accounting,
+                  f"entidades={len(scan.entities)}, modo={scan.sheet_findings}")
+            descs = {e.description for e in scan.entities}
+            check("separa el nombre del código", "GLOBAL MENTA SL" in descs,
+                  str(sorted(descs))[:120])
+            cands = candidates_from_pgc(scan)
+            kinds = {c.kind for c in cands}
+            check("clasifica CLIENTE+PROVEEDOR del combinado", {"CLIENTE", "PROVEEDOR"} <= kinds, str(kinds))
+            # End-to-end: el nombre se anonimiza, el código se queda
+            from implica_anon import formats
+            mapping = {"GLOBAL MENTA SL": "[Cliente-001]"}
+            dst = _P(d) / "combo.out.xlsx"
+            formats.apply_replacements(p, mapping, dst)
+            wb2 = _LW(dst); txt = " ".join(
+                str(c.value) for ws2 in wb2.worksheets for row in ws2.iter_rows() for c in row if c.value)
+            check("nombre anonimizado y código intacto en la celda combinada",
+                  "GLOBAL MENTA SL" not in txt and "[Cliente-001]" in txt and "4300001" in txt,
+                  "")
+    except Exception as e:
+        check("Excel: código+nombre combinado", False, f"excepción: {e}")
+
+
 def print_report():
     print("\n" + "=" * 70)
     print("MÉTRICAS")
@@ -812,5 +856,6 @@ if __name__ == "__main__":
     c15_pptx_graficos()
     c16_pdf_form_fields()
     c17_excel_inteligencia()
+    c18_excel_codigo_nombre_combinado()
     all_ok = print_report()
     sys.exit(0 if all_ok else 1)

@@ -262,6 +262,31 @@ def _detect_by_content(ws, max_scan: int = 100) -> tuple[int | None, int | None,
     return 1, col_account, col_desc
 
 
+# Código + nombre en la MISMA celda: "4300001 GLOBAL MENTA SL" (Holded, exports
+# manuales, mayores heredados). El código de cuenta y el nombre van juntos.
+_COMBINED_RE = re.compile(r"^\s*(\d{6,10})\s+(.+\S)\s*$")
+_COMBINED_PGC_RE = re.compile(r"^\s*[456]\d{5,9}\s+\S")
+
+
+def _detect_combined_code_name(ws, max_scan: int = 100) -> tuple[int | None, int | None]:
+    """Detecta una columna con 'código nombre' en la misma celda. Devuelve
+    (fila_inicio, col) o (None, None)."""
+    if not ws.max_row or not ws.max_column:
+        return None, None
+    col_score: dict[int, int] = {}
+    for r in range(1, min(max_scan, ws.max_row) + 1):
+        for c in range(1, ws.max_column + 1):
+            val = ws.cell(row=r, column=c).value
+            if isinstance(val, str) and _COMBINED_PGC_RE.match(val):
+                col_score[c] = col_score.get(c, 0) + 1
+    if not col_score:
+        return None, None
+    col = max(col_score, key=col_score.get)
+    if col_score[col] < 5:
+        return None, None
+    return 1, col
+
+
 def scan_workbook(path: Path) -> AccountingScanResult:
     """Escanea un .xlsx en busca de hojas que parezcan libros contables.
 
@@ -283,6 +308,14 @@ def scan_workbook(path: Path) -> AccountingScanResult:
                 if not header_row:
                     header_row, col_account, col_desc = _detect_by_content(ws)
                     detection_mode = "content"
+                combined_col = None
+                if not header_row:
+                    # Último intento: 'código nombre' en la misma celda.
+                    header_row, combined_col = _detect_combined_code_name(ws)
+                    if header_row:
+                        col_account = combined_col
+                        col_desc = combined_col
+                        detection_mode = "combined"
                 if not header_row:
                     continue
 
@@ -293,15 +326,27 @@ def scan_workbook(path: Path) -> AccountingScanResult:
                 for r in ws.iter_rows(min_row=header_row + 1, values_only=False):
                     if n_rows >= max_rows:
                         break
-                    cell_account = r[col_account - 1]
-                    cell_desc = r[col_desc - 1]
-                    code = cell_account.value
-                    desc = cell_desc.value
-                    if code is None and desc is None:
-                        continue
-                    n_rows += 1
-                    code_str = "" if code is None else _normalize_account_code(code)
-                    desc_str = "" if desc is None else str(desc).strip()
+                    if combined_col is not None:
+                        # 'código nombre' juntos: separar la celda.
+                        raw = r[combined_col - 1].value
+                        n_rows += 1
+                        m = _COMBINED_RE.match(str(raw)) if isinstance(raw, str) else None
+                        if not m:
+                            continue
+                        code_str = _normalize_account_code(m.group(1))
+                        desc_str = m.group(2).strip()
+                        row_num = r[combined_col - 1].row
+                    else:
+                        cell_account = r[col_account - 1]
+                        cell_desc = r[col_desc - 1]
+                        code = cell_account.value
+                        desc = cell_desc.value
+                        if code is None and desc is None:
+                            continue
+                        n_rows += 1
+                        code_str = "" if code is None else _normalize_account_code(code)
+                        desc_str = "" if desc is None else str(desc).strip()
+                        row_num = cell_account.row
                     kind = classify_account(code_str)
                     if kind and desc_str:
                         entities.append(
@@ -310,7 +355,7 @@ def scan_workbook(path: Path) -> AccountingScanResult:
                                 description=desc_str,
                                 kind=kind,
                                 sheet=ws.title,
-                                row=cell_account.row,
+                                row=row_num,
                             )
                         )
                         n_matched += 1
