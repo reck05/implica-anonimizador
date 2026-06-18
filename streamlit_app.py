@@ -667,6 +667,49 @@ def _clusters_to_df(
     return pd.DataFrame(rows)
 
 
+def _relation_hint(members: list) -> str:
+    """Explica POR QUÉ se sugiere unir estos candidatos, para que el usuario lo
+    entienda sin leerse la factura entera. Combina, de más a menos fiable:
+      1) misma cuenta contable (PGC) — señal fuerte de que son la misma entidad,
+      2) un código común en sus filas (nº de factura/ref) — coaparecen,
+      3) que el nombre empiece igual (prefijo común).
+    Pensado sobre todo para Excels contables."""
+    names = [str(m.get("Canónico", "")) for m in members]
+    parts: list[str] = []
+
+    # 1) Cuentas PGC compartidas
+    code_sets = [set(m.get("_account_codes") or []) for m in members]
+    if code_sets and all(code_sets):
+        shared_acc = set.intersection(*code_sets)
+        if shared_acc:
+            parts.append("misma cuenta " + ", ".join(sorted(shared_acc)[:3]))
+    else:
+        shared_acc = set()
+
+    # 2) Código común en el contexto (factura/referencia: ABC-123, o 5+ dígitos)
+    code_re = re.compile(r"[A-ZÑ]{2,}[-/][A-Z0-9Ñ-]*\d{2,}|\b\d{5,}\b")
+    ctx_codes = []
+    for m in members:
+        ctx = str(m.get("Contexto", "") or "").upper()
+        if ctx and ctx != "—":
+            ctx_codes.append(set(code_re.findall(ctx)))
+    nonempty = [s for s in ctx_codes if s]
+    if len(nonempty) >= 2:
+        shared_ctx = set.intersection(*nonempty) - {c.upper() for c in shared_acc}
+        if shared_ctx:
+            parts.append("aparecen juntos en " + ", ".join(sorted(shared_ctx)[:2]))
+
+    # 3) Prefijo común (empiezan igual)
+    if len(names) >= 2:
+        pref = os.path.commonprefix([n.upper() for n in names]).strip(" .,-")
+        if len(pref) >= 3:
+            parts.append(f"empiezan igual: «{pref}…»")
+
+    if not parts:
+        parts.append("nombres muy parecidos")
+    return " · ".join(parts)
+
+
 def _render_merge_suggestions(df_full, project: str) -> None:
     """Sugerencias de unificación de duplicados. Para cada candidato eliges a qué
     grupo/codename unirlo (puedes MOVERLO a otro grupo) o «❌ No unir», y luego
@@ -732,8 +775,10 @@ def _render_merge_suggestions(df_full, project: str) -> None:
         # 2) Un desplegable por candidato: a qué grupo/codename va (o no unir).
         #    Las opciones se identifican por índice de grupo (estable aunque se
         #    edite el codename), así que mover ≡ elegir otro grupo.
-        st.markdown("---")
         for g in valid:
+            st.markdown("---")
+            # Por qué se sugieren juntos (misma cuenta / código común / empiezan igual)
+            st.caption(f"**Grupo {g['gi'] + 1}** · 🔗 se relacionan: {_md_escape(_relation_hint(g['members']))}")
             seen_ctx = set()
             for m in g["members"]:
                 rid = int(m["_rowid"])

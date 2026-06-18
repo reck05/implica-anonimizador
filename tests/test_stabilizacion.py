@@ -607,6 +607,28 @@ def c13_ocr_opcional():
         check("PDF con texto se extrae normal", False, f"excepción: {e}")
 
 
+def c14_relation_hint():
+    """Iter 12: la sugerencia de unión explica POR QUÉ se relacionan los nombres."""
+    print("\n=== C14. 'Por qué se relacionan' en unificación ===")
+    rh = app._relation_hint
+    # Empiezan igual (prefijo común)
+    h1 = rh([{"Canónico": "JOSE A", "_account_codes": [], "Contexto": "—"},
+             {"Canónico": "JOSE ANT", "_account_codes": [], "Contexto": "—"}])
+    check("detecta prefijo común (empiezan igual)", "empiezan igual" in h1 and "JOSE A" in h1, h1)
+    # Misma cuenta contable
+    h2 = rh([{"Canónico": "Garcia SL", "_account_codes": ["4300001"], "Contexto": "—"},
+             {"Canónico": "Garcia", "_account_codes": ["4300001"], "Contexto": "—"}])
+    check("detecta misma cuenta PGC", "misma cuenta" in h2 and "4300001" in h2, h2)
+    # Código común en el contexto (factura)
+    h3 = rh([{"Canónico": "JOSE A", "_account_codes": [], "Contexto": "5561 · FAC-HRM25-00027 · 395"},
+             {"Canónico": "JOSE ANT", "_account_codes": [], "Contexto": "7010 · FAC-HRM25-00027 · 0"}])
+    check("detecta código común en las filas (factura)", "FAC-HRM25-00027" in h3, h3)
+    # Sin pistas → fallback
+    h4 = rh([{"Canónico": "Mercadona", "_account_codes": [], "Contexto": "—"},
+             {"Canónico": "Mercadnoa", "_account_codes": [], "Contexto": "—"}])
+    check("fallback cuando no hay código/cuenta/prefijo claro", bool(h4.strip()), h4)
+
+
 def print_report():
     print("\n" + "=" * 70)
     print("MÉTRICAS")
@@ -645,5 +667,6 @@ if __name__ == "__main__":
     c11_checksum_identificadores()
     c12_presidio_opcional()
     c13_ocr_opcional()
+    c14_relation_hint()
     all_ok = print_report()
     sys.exit(0 if all_ok else 1)
