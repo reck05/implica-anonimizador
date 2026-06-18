@@ -709,6 +709,67 @@ def c16_pdf_form_fields():
         check("PDF: campos de formulario", False, f"excepción: {e}")
 
 
+def c17_excel_inteligencia():
+    """Loop Excel: códigos float, clean_description, sinónimos de columna y
+    detección por contenido (cabecera no estándar)."""
+    print("\n=== C17. Excel: inteligencia de detección contable ===")
+    from implica_anon import accounting as A
+    # 1) Código de cuenta como número/float (openpyxl) y demasiado corto
+    check("código float '4300001.0' clasifica como CLIENTE",
+          A.classify_account("4300001.0") == "CLIENTE", str(A.classify_account("4300001.0")))
+    check("código corto '43' NO clasifica (evita falsos)", A.classify_account("43") is None)
+    check("código '4000001' clasifica como PROVEEDOR",
+          A.classify_account("4000001") == "PROVEEDOR", str(A.classify_account("4000001")))
+    # 2) clean_description: quita prefijo factura, fecha e importe; NO mutila nombres con nº
+    cd = A.clean_description
+    check("quita prefijo 'Fra. 123'", cd("CLIENTE", "Fra. 123 Acme Distribución SL") == "Acme Distribución SL",
+          repr(cd("CLIENTE", "Fra. 123 Acme Distribución SL")))
+    check("quita fecha final", cd("CLIENTE", "Acme SL 12/03/2024") == "Acme SL",
+          repr(cd("CLIENTE", "Acme SL 12/03/2024")))
+    check("quita importe con € final", cd("CLIENTE", "Acme SL 1.250,00 €") == "Acme SL",
+          repr(cd("CLIENTE", "Acme SL 1.250,00 €")))
+    check("NO mutila nombre que acaba en número ('Garaje 2000')",
+          cd("CLIENTE", "Garaje 2000") == "Garaje 2000", repr(cd("CLIENTE", "Garaje 2000")))
+    # 3) Sinónimos de columna (Contaplus/Sage): 'Num. Cta' + 'Tercero' + Debe/Haber
+    try:
+        from openpyxl import Workbook as _WB
+        import tempfile as _tmp
+        from pathlib import Path as _P
+        wb = _WB(); ws = wb.active
+        ws.append(["Num. Cta", "Tercero", "Debe", "Haber"])
+        ws.append(["43000001", "Global Menta S.L.", 100, 0])
+        ws.append(["40000002", "Proveedora Ibérica SA", 0, 50])
+        with _tmp.TemporaryDirectory() as d:
+            p = _P(d) / "syn.xlsx"; wb.save(p)
+            scan = A.scan_workbook(p)
+            check("detecta hoja contable con sinónimos 'Num. Cta'/'Tercero'", scan.is_accounting,
+                  f"entidades={len(scan.entities)}")
+            kinds = {e.kind for e in scan.entities}
+            check("clasifica CLIENTE y PROVEEDOR por código", {"CLIENTE", "PROVEEDOR"} <= kinds, str(kinds))
+        # 4) Detección por contenido sin cabecera reconocible (8 códigos 4xx)
+        wb2 = _WB(); ws2 = wb2.active
+        ws2.append(["x", "y", "z"])  # cabecera no reconocible
+        for i in range(8):
+            ws2.append([f"4300{i:04d}", f"Cliente Numero {i} SL", 10 + i])
+        with _tmp.TemporaryDirectory() as d:
+            p2 = _P(d) / "content.xlsx"; wb2.save(p2)
+            scan2 = A.scan_workbook(p2)
+            check("detección por contenido (códigos 8 díg. 4xx sin cabecera)", scan2.is_accounting,
+                  f"entidades={len(scan2.entities)}")
+        # 5) Una columna de AÑOS no se confunde con códigos PGC
+        wb3 = _WB(); ws3 = wb3.active
+        ws3.append(["a", "b"])
+        for y in range(2015, 2025):
+            ws3.append([str(y), f"Fila {y}"])
+        with _tmp.TemporaryDirectory() as d:
+            p3 = _P(d) / "years.xlsx"; wb3.save(p3)
+            scan3 = A.scan_workbook(p3)
+            check("años (2015-2024) NO se detectan como contable", not scan3.is_accounting,
+                  f"entidades={len(scan3.entities)}")
+    except Exception as e:
+        check("Excel: sinónimos + contenido", False, f"excepción: {e}")
+
+
 def print_report():
     print("\n" + "=" * 70)
     print("MÉTRICAS")
@@ -750,5 +811,6 @@ if __name__ == "__main__":
     c14_relation_hint()
     c15_pptx_graficos()
     c16_pdf_form_fields()
+    c17_excel_inteligencia()
     all_ok = print_report()
     sys.exit(0 if all_ok else 1)

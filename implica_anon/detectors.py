@@ -104,11 +104,13 @@ _VALIDATORS = {"CIF": validate_cif, "NIF": validate_nif, "IBAN": validate_iban}
 
 def _keep_structured_id(kind: str, value: str, full_text: str, start: int) -> bool:
     """¿Mantener este match de CIF/NIF/IBAN? Sí si pasa checksum, o si lleva una
-    etiqueta de contexto delante ("CIF: ...") aunque el checksum falle (erratas)."""
+    etiqueta de contexto cerca ("CIF: ...") aunque el checksum falle (erratas/OCR)."""
     validator = _VALIDATORS.get(kind)
     if validator and validator(value):
         return True
-    ctx = full_text[max(0, start - 14):start].lower()
+    # Ventana de contexto más amplia (40 chars) y con espacios/saltos normalizados,
+    # para cazar etiquetas tipo "C.I.F.:\n   B12..." separadas del número.
+    ctx = re.sub(r"[\s]+", " ", full_text[max(0, start - 40):start].lower())
     return any(lbl in ctx for lbl in _CTX_LABELS.get(kind, ()))
 
 
@@ -768,7 +770,7 @@ def suggest_unifications(entries: list[tuple]) -> list[list]:
     # Salvaguarda anti-cuelgue: un bloque enorme (miles de nombres casi idénticos)
     # daría O(n²) dentro del bloque. Por encima de este tamaño no sugerimos para ese
     # bloque — las sugerencias son una comodidad opcional, no deben colgar la UI.
-    MAX_BLOCK = 600
+    MAX_BLOCK = 250
 
     groups: list[list] = []
     used: set = set()

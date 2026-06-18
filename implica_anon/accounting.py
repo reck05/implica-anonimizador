@@ -70,11 +70,23 @@ PGC_PREFIXES: list[tuple[str, str]] = [
 PGC_PUBLIC_PREFIXES = ("470", "471", "472", "473", "475", "476", "477", "479")
 
 
+def _normalize_account_code(code) -> str:
+    """Normaliza el código de cuenta. Excel suele guardarlo como número, así que
+    openpyxl devuelve int/float: '4300001.0' → '4300001'."""
+    s = str(code).strip()
+    if s.endswith(".0") and s[:-2].isdigit():
+        s = s[:-2]
+    return s
+
+
 def classify_account(code: str) -> str | None:
     """Devuelve la categoría PGC del código, o None si no es de terceros."""
-    if not code:
+    if code is None or code == "":
         return None
-    code = str(code).strip()
+    code = _normalize_account_code(code)
+    # Códigos demasiado cortos (1-2 dígitos) no son subcuentas de terceros fiables.
+    if len(code) < 3:
+        return None
     # Saltar admins públicas
     if any(code.startswith(p) for p in PGC_PUBLIC_PREFIXES):
         return None
@@ -84,16 +96,25 @@ def classify_account(code: str) -> str | None:
     return None
 
 
-# Sinónimos de columnas (case-insensitive). Cubre exports de Contaplus, Sage, A3, Holded, etc.
+# Sinónimos de columnas (case-insensitive). Cubre exports de Contaplus, Sage, A3,
+# Holded, SAP, etc. — distintos software nombran las columnas de formas muy diversas.
 COLUMN_HINTS_ACCOUNT = (
     "cuenta", "código", "codigo", "cuenta contable", "cta", "subcuenta",
     "account", "código cuenta", "núm cuenta", "num cuenta", "n cuenta",
     "nº cuenta", "n.º cuenta", "código contable",
+    # Variantes Contaplus/Sage/A3/SAP
+    "num. cta", "n. cta", "cod. contable", "cód.", "cód contable", "cod contable",
+    "n. cuenta", "número de cuenta", "numero de cuenta", "g/l", "gl account",
+    "nº cta", "cta contable", "código de cuenta", "codigo de cuenta",
 )
 COLUMN_HINTS_DESCRIPTION = (
     "descripción", "descripcion", "concepto", "nombre", "denominación", "denominacion",
     "title", "description", "razón social", "razon social", "titular",
     "nombre cuenta", "nombre cta", "subcuenta nombre",
+    # Variantes por software / legislación
+    "tercero", "terceros", "contraparte", "acreedor", "acreedora", "deudor",
+    "deudora", "titular cuenta", "nombre tercero", "razón social tercero",
+    "concepto/descripción", "detalle",
 )
 COLUMN_HINTS_NUMERIC = (
     "debe", "haber", "saldo", "saldo inicial", "saldo final", "saldo anterior",
@@ -161,11 +182,12 @@ def _normalize_header(value) -> str:
     return str(value).strip().lower()
 
 
-def _find_header_row(ws, max_scan: int = 40) -> tuple[int | None, int | None, int | None]:
+def _find_header_row(ws, max_scan: int = 100) -> tuple[int | None, int | None, int | None]:
     """Busca la fila de cabecera (Cuenta / Descripción / [Debe/Haber/Saldo]).
 
-    Escanea las primeras 40 filas (no 20) porque muchos exports tienen filas de
-    cabecera con info de empresa, periodo, etc. antes de la tabla.
+    Escanea las primeras 100 filas porque muchos exports (Sage/Contaplus/SAP)
+    arrastran bloques largos de cabecera (empresa, periodo, logos, espacios)
+    antes de la tabla real.
 
     Devuelve (fila, col_cuenta, col_descripcion) o (None, None, None).
     """
@@ -199,16 +221,18 @@ def _detect_by_content(ws, max_scan: int = 100) -> tuple[int | None, int | None,
     if not ws.max_row or not ws.max_column:
         return None, None, None
 
-    # Contar cuántas celdas en cada columna parecen códigos PGC
-    pgc_pattern = re.compile(r"^\d{3,10}$")
+    # Contar cuántas celdas en cada columna parecen códigos PGC de terceros.
+    # Patrón estricto: empieza por 4/5/6 y 8-10 dígitos (subcuenta real) → evita
+    # confundir años (2024), referencias o fechas con códigos de cuenta.
+    pgc_pattern = re.compile(r"^[456]\d{7,9}$")
     col_score: dict[int, int] = {}
     for r in range(1, min(max_scan, ws.max_row) + 1):
         for c in range(1, ws.max_column + 1):
             val = ws.cell(row=r, column=c).value
             if val is None:
                 continue
-            sval = str(val).strip()
-            if pgc_pattern.fullmatch(sval) and sval[0] in "456":
+            sval = _normalize_account_code(val)  # Excel guarda códigos como número
+            if pgc_pattern.fullmatch(sval):
                 col_score[c] = col_score.get(c, 0) + 1
 
     if not col_score:
@@ -276,7 +300,7 @@ def scan_workbook(path: Path) -> AccountingScanResult:
                     if code is None and desc is None:
                         continue
                     n_rows += 1
-                    code_str = "" if code is None else str(code).strip()
+                    code_str = "" if code is None else _normalize_account_code(code)
                     desc_str = "" if desc is None else str(desc).strip()
                     kind = classify_account(code_str)
                     if kind and desc_str:
@@ -472,6 +496,13 @@ def row_contexts(
     remaining = {w for w in wanted_lower if w}
     if not remaining:
         return out
+    # Pre-filtro compilado: una sola pasada de regex descarta de golpe las filas que
+    # NO contienen ningún nombre buscado (la inmensa mayoría en un Excel grande),
+    # evitando el bucle por-nombre en esas filas (de O(filas×nombres) a casi O(filas)).
+    try:
+        prefilter = re.compile("|".join(re.escape(w) for w in remaining))
+    except Exception:
+        prefilter = None
     try:
         wb = load_workbook(filename=str(path), data_only=True, read_only=True)
     except Exception:
@@ -503,6 +534,10 @@ def row_contexts(
                     # Normalizar espacios para que 'ACME  CORP' (doble espacio) case
                     # con el nombre buscado 'acme corp'.
                     low = re.sub(r"\s+", " ", rowtext).lower()
+                    # Fast-skip: si la fila no contiene NINGÚN nombre buscado, no
+                    # entramos al bucle por-nombre (ahorra el grueso del trabajo).
+                    if prefilter is not None and not prefilter.search(low):
+                        continue
                     found_here = []
                     for w in remaining:
                         comps += 1
@@ -536,13 +571,34 @@ SERVPRO_RE = re.compile(r"^\s*Servicios profesionales\s+", re.IGNORECASE)
 # IBAN tras guion, referencia tras "ref", o "C/C ..."
 BANK_REF_RE = re.compile(r"\s*-\s*ES\d{2}[\d\s]*$|\s+ref[\.\s][^.]*$|\s+c/c[^.]*$", re.IGNORECASE)
 
+# Prefijos de documento al inicio de la descripción ("Fra. 123 Acme" → "Acme").
+DOC_PREFIX_RE = re.compile(
+    r"^\s*(?:Fra\.?|Fact\.?|Factura|FAC|Albar[áa]n|ALB|Pedido|PED|Ref\.?|Referencia|Recibo|Abono|N[ºo°]\.?)"
+    r"[:.\s/-]*\d*[:.\s/-]*",
+    re.IGNORECASE,
+)
+# Fecha al final ("Acme 12/03/2024" → "Acme"). Solo formatos claros de fecha.
+TRAILING_DATE_RE = re.compile(r"[\s,;-]*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\s*$")
+# Importe CON símbolo de moneda al final ("Acme 1.250,00 €" → "Acme"). Exigimos
+# € o EUR para NO mutilar nombres que acaban en número ("Garaje 2000", "Canal 7").
+TRAILING_AMOUNT_RE = re.compile(
+    r"[\s,;-]*\d[\d.,]*\s*(?:€|EUR|eur|\$|USD)\s*$"
+)
+
 
 def clean_description(kind: str, desc: str) -> str:
-    """Extrae el nombre limpio de la descripción según el tipo de cuenta."""
+    """Extrae el nombre limpio de la descripción según el tipo de cuenta.
+
+    Quita ruido típico de los apuntes: CIF embebido, prefijos de factura/albarán,
+    fechas e importes con moneda al final. NO toca números 'pegados' a un nombre
+    sin separador claro (para no romper 'Garaje 2000')."""
     text = desc.strip()
 
     # Quitar CIF entre paréntesis o tras coma
     text = CIF_IN_DESC_RE.sub("", text).strip(" ,;-")
+
+    # Prefijo de documento al inicio (Fra./Albarán/Ref. + número)
+    text = DOC_PREFIX_RE.sub("", text)
 
     if kind == "PERSONA":
         text = ANTICIPO_RE.sub("", text)
@@ -552,7 +608,11 @@ def clean_description(kind: str, desc: str) -> str:
     # 623xxxxx "Servicios profesionales X" → X
     text = SERVPRO_RE.sub("", text)
 
-    return text.strip()
+    # Fecha / importe-con-moneda al final
+    text = TRAILING_DATE_RE.sub("", text)
+    text = TRAILING_AMOUNT_RE.sub("", text)
+
+    return text.strip(" ,;-")
 
 
 # --- Agrupación de entidades en clusters listos para mapping ---
