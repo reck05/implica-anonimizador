@@ -672,6 +672,43 @@ def c15_pptx_graficos():
         check("PPTX: cobertura de gráficos", False, f"excepción: {e}")
 
 
+def c16_pdf_form_fields():
+    """Loop robustez: campos de formulario PDF (rellenables) se detectan y anonimizan."""
+    print("\n=== C16. PDF: campos de formulario ===")
+    NAME = "Global Menta S.L."
+    try:
+        import fitz as _fitz, tempfile as _tmp
+        from pathlib import Path as _P
+        doc = _fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 200), "Documento con formulario")
+        w = _fitz.Widget()
+        w.field_name = "cliente"
+        w.field_type = _fitz.PDF_WIDGET_TYPE_TEXT
+        w.rect = _fitz.Rect(72, 72, 360, 96)
+        w.field_value = NAME
+        page.add_widget(w)
+        with _tmp.TemporaryDirectory() as d:
+            src = _P(d) / "form.pdf"; doc.save(str(src)); doc.close()
+            extracted = " ".join(formats.extract_text(src))
+            check("PDF: el valor del campo se EXTRAE (detectable)", NAME in extracted,
+                  "" if NAME in extracted else "no extraído")
+            dst = _P(d) / "form.out.pdf"
+            formats.apply_replacements(src, {NAME: "Paradise"}, dst)
+            od = _fitz.open(str(dst))
+            vals = []
+            for pg in od:
+                for ww in (pg.widgets() or []):
+                    if isinstance(ww.field_value, str):
+                        vals.append(ww.field_value)
+            od.close()
+            joined = " ".join(vals)
+            check("PDF: campo de formulario anonimizado", NAME not in joined and "Paradise" in joined,
+                  f"valores={vals}")
+    except Exception as e:
+        check("PDF: campos de formulario", False, f"excepción: {e}")
+
+
 def print_report():
     print("\n" + "=" * 70)
     print("MÉTRICAS")
@@ -712,5 +749,6 @@ if __name__ == "__main__":
     c13_ocr_opcional()
     c14_relation_hint()
     c15_pptx_graficos()
+    c16_pdf_form_fields()
     all_ok = print_report()
     sys.exit(0 if all_ok else 1)

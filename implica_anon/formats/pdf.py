@@ -78,6 +78,14 @@ def extract_text(path: Path) -> list[str]:
                 ocr_text = _ocr_page_text(page)
                 if ocr_text.strip():
                     texts.append(ocr_text)
+            # Campos de formulario rellenables: su valor no sale en get_text.
+            try:
+                for w in (page.widgets() or []):
+                    val = getattr(w, "field_value", None)
+                    if isinstance(val, str) and val.strip():
+                        texts.append(val.strip())
+            except Exception:
+                pass
     return texts
 
 
@@ -172,5 +180,16 @@ def apply_replacements(src: Path, mapping: dict[str, str], dst: Path) -> None:
                     )
                     annot.update()
             page.apply_redactions()
+            # Campos de formulario rellenables (texto): search_for no los toca.
+            try:
+                for w in (page.widgets() or []):
+                    val = getattr(w, "field_value", None)
+                    if isinstance(val, str) and val:
+                        new_val = replace_in_text(val, mapping)[0]
+                        if new_val != val:
+                            w.field_value = new_val
+                            w.update()
+            except Exception:
+                pass
         _scrub_pdf_metadata(doc)
         doc.save(str(dst), garbage=4, deflate=True)
