@@ -164,7 +164,8 @@ if not _check_password():
 
 
 st.title("🔒 Implica Anonimizador")
-st.caption("Anonimiza documentos M&A reemplazando nombres por codenames.")
+st.caption("Sustituye nombres reales (empresas, personas, CIF/NIF/IBAN) por nombres falsos "
+           "antes de compartir un documento o pasarlo a una IA.")
 
 # Banner de demo cuando se ejecuta en Streamlit Cloud o cualquier despliegue público
 if os.environ.get("IMPLICA_ANON_PUBLIC_DEMO", "").lower() in ("1", "true", "yes"):
@@ -177,7 +178,19 @@ if os.environ.get("IMPLICA_ANON_PUBLIC_DEMO", "").lower() in ("1", "true", "yes"
         icon="⚠️",
     )
 else:
-    st.caption("**100% local.** Nada sale de esta máquina.")
+    st.success(
+        "🔒 **100% privado.** Tus archivos y los nombres reales **nunca salen de este "
+        "ordenador**. Solo descargas el documento ya anonimizado.",
+        icon="🔒",
+    )
+    with st.expander("¿Cómo funciona? (en 1 minuto)"):
+        st.markdown(
+            "- Detecta los nombres **en local** (modelos en tu equipo, sin internet).\n"
+            "- Tú revisas qué se va a ocultar y con qué **nombre falso**.\n"
+            "- El archivo original no se sube a ningún sitio; solo se genera una copia anonimizada.\n"
+            "- La «lista de reemplazos» (qué nombre real → qué nombre falso) se guarda en "
+            "`projects/<proyecto>.json` por si luego quieres revertirlo — **no** contiene el documento."
+        )
 
 
 # --- Sidebar: proyecto ---
@@ -191,9 +204,10 @@ with st.sidebar:
 
     if project_mode == "Nuevo proyecto":
         project_input = st.text_input(
-            "Codename del proyecto",
+            "Nombre del proyecto (codename)",
             placeholder="paradise",
-            help="Nombre interno del deal.",
+            help="Un nombre interno para este deal (solo letras/números). Ej.: «paradise». "
+                 "Se usa para guardar la lista de reemplazos.",
         )
         project = (project_input or "").strip().lower()
     else:
@@ -208,102 +222,87 @@ with st.sidebar:
     main_company = ""
     if project:
         main_company = st.text_input(
-            "Empresa principal (nombre real)",
+            "Tu empresa (la del sumas y saldos)",
             key=f"main_{project}",
             placeholder="Clínica Dental Sonrisa S.L.",
-            help="La empresa del mandato / de las cuentas. Se reemplaza por el codename "
-                 "del proyecto. Déjalo vacío y el sistema la deduce por frecuencia.",
+            help="La empresa cuyas cuentas estás anonimizando. Se reemplaza por el "
+                 "nombre del proyecto. Si no la sabes, déjalo vacío y se deduce sola.",
         ).strip()
 
     if project:
         pm = mapping_mod.load(project)
         total = sum(len(v) for v in pm.entries.values())
-        st.metric("Entradas en mapping", total)
-        if pm.updated_at:
-            st.caption(f"Actualizado: {pm.updated_at}")
+        st.metric("Reemplazos guardados", total)
 
-        # Reanudar último análisis (memoria entre refrescos/reinicios)
-        if "df" not in st.session_state or st.session_state.get("proj") != project:
-            cached = _load_session_cache(project)
-            if cached:
-                n = len(cached.get("upload_data", []))
-                st.caption(
-                    "🔒 La caché va **cifrada** en disco y la llave solo está en este "
-                    "equipo (no se sincroniza). Aun así, bórrala al terminar si el "
-                    "equipo es compartido."
-                )
-                if st.button(f"▶️ Reanudar último análisis ({n} archivo/s)",
-                             use_container_width=True,
-                             help="Recupera el último análisis sin volver a subir el documento."):
-                    st.session_state["df"] = cached["df"]
-                    st.session_state["upload_data"] = cached["upload_data"]
-                    st.session_state["proj"] = project
-                    st.session_state["is_accounting"] = cached.get("is_accounting", False)
-                    st.session_state["clusters_raw"] = cached.get("clusters_raw", [])
-                    # Reconstruir contextos desde el df (no se persiste el dict aparte)
-                    st.session_state["_ctx"] = _contexts_from_df(cached["df"])
-                    st.rerun()
-                if st.button("🗑️ Borrar caché de este proyecto", use_container_width=True,
-                             help="Elimina del disco el documento y la tabla guardados (confidencialidad)."):
-                    _clear_session_cache(project)
-                    st.success("Caché borrada.")
+        # --- Todo lo no esencial, plegado en "Avanzado" ---
+        with st.expander("⚙️ Avanzado"):
+            # Reanudar último análisis (memoria entre refrescos/reinicios)
+            if "df" not in st.session_state or st.session_state.get("proj") != project:
+                cached = _load_session_cache(project)
+                if cached:
+                    n = len(cached.get("upload_data", []))
+                    st.caption(
+                        "🔒 La sesión guardada va **cifrada** en disco (llave solo en este "
+                        "equipo). Aun así, bórrala al terminar si el equipo es compartido."
+                    )
+                    if st.button(f"🔒 Recuperar sesión anterior ({n} archivo/s)",
+                                 use_container_width=True,
+                                 help="Recupera el último análisis sin volver a subir el documento."):
+                        st.session_state["df"] = cached["df"]
+                        st.session_state["upload_data"] = cached["upload_data"]
+                        st.session_state["proj"] = project
+                        st.session_state["is_accounting"] = cached.get("is_accounting", False)
+                        st.session_state["clusters_raw"] = cached.get("clusters_raw", [])
+                        st.session_state["_ctx"] = _contexts_from_df(cached["df"])
+                        st.rerun()
+                    if st.button("🗑️ Borrar sesión guardada", use_container_width=True,
+                                 help="Elimina del disco el documento y la tabla guardados (confidencialidad)."):
+                        _clear_session_cache(project)
+                        st.success("Sesión borrada.")
 
-        with st.expander("Ver mapping actual"):
+            st.markdown("**Detección extra** (local, opcional)")
+            st.caption("Si activas algo, vuelve a pulsar **Analizar**.")
+            st.checkbox(
+                "🧠 Reforzar nombres de persona",
+                key="opt_presidio",
+                help="Usa Microsoft Presidio sobre el mismo modelo local para capturar "
+                     "nombres de PERSONA completos en Word/PPT/PDF. Algo más lento.",
+            )
+            try:
+                from implica_anon.formats import pdf as _pdf_mod
+                _ocr_ready = _pdf_mod.ocr_available()
+            except Exception:
+                _ocr_ready = False
+            st.checkbox(
+                "🖼️ Leer PDFs escaneados (OCR)" + ("" if _ocr_ready else " — requiere Tesseract"),
+                key="opt_ocr", disabled=not _ocr_ready,
+                help="Lee PDFs escaneados (imágenes) para detectar nombres. Requiere el "
+                     "binario Tesseract instalado; si no está, sale deshabilitado.",
+            )
+
+            st.markdown("**Lista de reemplazos** (nombre real → nombre falso)")
             if not pm.entries:
-                st.write("_Sin entradas._")
+                st.caption("_Aún no hay reemplazos guardados._")
             else:
                 for kind, entries in pm.entries.items():
                     if not entries:
                         continue
-                    with st.container():
-                        st.markdown(f"**{KIND_LABELS.get(kind, kind)}** ({len(entries)})")
-                        st.dataframe(
-                            pd.DataFrame([{"Original": k, "Codename": v} for k, v in entries.items()]),
-                            hide_index=True, use_container_width=True,
-                            height=min(200, 35 * (len(entries) + 1)),
-                        )
+                    st.markdown(f"_{KIND_LABELS.get(kind, kind)}_ ({len(entries)})")
+                    st.dataframe(
+                        pd.DataFrame([{"Nombre real": k, "Nombre falso": v} for k, v in entries.items()]),
+                        hide_index=True, use_container_width=True,
+                        height=min(180, 35 * (len(entries) + 1)),
+                    )
 
     st.divider()
-
-    # Botón para limpiar estado y empezar de nuevo
-    if st.button("🔄 Empezar de nuevo", use_container_width=True, help="Limpia los archivos cargados y la tabla de candidatos (y la caché en disco). No borra mappings guardados."):
+    if st.button("🔄 Limpiar sesión (mantiene los reemplazos)", use_container_width=True,
+                 help="Quita los archivos y la tabla actuales para empezar otro documento. "
+                      "No borra la lista de reemplazos guardada."):
         if project:
-            _clear_session_cache(project)  # evita reanudar contexto/archivo viejo
+            _clear_session_cache(project)
         for key in ("df", "upload_data", "proj", "is_accounting", "clusters_raw", "codename_mode_used", "_ctx"):
             st.session_state.pop(key, None)
         st.rerun()
-
-    st.divider()
-    with st.expander("⚙️ Motores opcionales (avanzado)"):
-        st.caption(
-            "Capas extra de detección, **locales** (no sale nada de la máquina). "
-            "Si las activas, vuelve a pulsar **Analizar**."
-        )
-        st.checkbox(
-            "🧠 Reforzar nombres de persona (Presidio)",
-            key="opt_presidio",
-            help="Usa Microsoft Presidio sobre el mismo spaCy local para capturar "
-                 "nombres de PERSONA completos en documentos narrativos (Word/PPT/PDF). "
-                 "Algo más lento. No afecta a sumas y saldos.",
-        )
-        try:
-            from implica_anon.formats import pdf as _pdf_mod
-            _ocr_ready = _pdf_mod.ocr_available()
-        except Exception:
-            _ocr_ready = False
-        st.checkbox(
-            "🖼️ OCR para PDFs escaneados" + ("" if _ocr_ready else " (requiere Tesseract)"),
-            key="opt_ocr", disabled=not _ocr_ready,
-            help="Lee PDFs escaneados (imágenes) para DETECTAR nombres. Requiere el "
-                 "binario Tesseract instalado. Si no está, esta opción aparece deshabilitada.",
-        )
-
-    st.divider()
-    st.caption(
-        "🛡️ Confidencialidad: nada sale de esta máquina. "
-        "Los mappings (`projects/<codename>.json`) son sólo nombres↔codenames, "
-        "no contienen los documentos."
-    )
 
 
 # --- Tabs ---
@@ -743,8 +742,8 @@ def _render_merge_suggestions(df_full, project: str) -> None:
     if not valid:
         return
 
-    with st.expander(f"💡 {len(valid)} posible(s) duplicado(s) — revisa y unifica",
-                     expanded=len(valid) <= 12):
+    with st.expander(f"💡 {len(valid)} posible(s) duplicado(s) del mismo nombre — revisa y unifica",
+                     expanded=len(valid) <= 3):
         st.caption(
             "Para cada nombre elige **a qué codename unirlo** en el desplegable "
             "(puedes **moverlo a otro grupo** o dejarlo en **❌ No unir**), y pulsa "
@@ -890,18 +889,32 @@ def _process_files(uploaded_data, mapping: mapping_mod.ProjectMapping, *, invers
 # Tab: Anonimizar
 # =========================
 with tab_anon:
+    # Mini-guía de 4 pasos (solo hasta que el usuario la descarta)
+    if not st.session_state.get("_onboard_done"):
+        st.info(
+            "**Cómo funciona, en 4 pasos:**\n"
+            "1. **Pon un nombre de proyecto** (barra lateral) — ej.: «paradise».\n"
+            "2. **Sube tus documentos** (Excel, Word, PPT, PDF) y pulsa **Analizar**.\n"
+            "3. **Revisa** la tabla: qué nombres se ocultan y con qué nombre falso.\n"
+            "4. **Descarga** el documento ya anonimizado."
+        )
+        if st.button("Entendido, empezar →", key="_onboard_btn"):
+            st.session_state["_onboard_done"] = True
+            st.rerun()
+
     if not _require_project():
         st.stop()
 
+    st.subheader("1 · Sube tus documentos")
     uploaded = st.file_uploader(
-        "Sube los archivos (Excel, Word, PowerPoint, PDF)",
+        "Excel, Word, PowerPoint o PDF",
         type=["xlsx", "xlsm", "docx", "pptx", "pdf"],
         accept_multiple_files=True,
         key="uploader",
     )
 
     if not uploaded:
-        st.info("⬆️ Arrastra los archivos para empezar.")
+        st.info("⬆️ Arrastra aquí tus documentos (Excel de sumas y saldos, teaser, IM, contrato…) para empezar.")
         st.stop()
 
     st.write(f"**{len(uploaded)} archivo(s)**:")
@@ -1078,7 +1091,13 @@ with tab_anon:
 
     if "df" in st.session_state and st.session_state.get("proj") == project:
         st.divider()
-        st.subheader("Candidatos detectados")
+        df_full = st.session_state["df"]
+        _n_on = int(df_full["Anonimizar"].astype(bool).sum())
+        st.subheader("2 · Revisa qué se va a ocultar")
+        st.caption(
+            f"Detectados **{len(df_full)}** nombres ({_n_on} marcados para ocultar). "
+            "Quita el ✓ de los que NO quieras tocar, y cambia el **nombre falso** si quieres."
+        )
 
         # Selector de estrategia de codename (solo si hay cuentas PGC)
         if st.session_state.get("is_accounting"):
@@ -1108,11 +1127,6 @@ with tab_anon:
                     st.session_state["df"] = df_new
                     st.session_state["codename_mode_used"] = new_mode
 
-        st.caption(
-            "🔍 Cada fila = una entidad única. Puedes editar 3 columnas: **Anonimizar** (sí/no), "
-            "**Tipo** (si detectó mal: Empresa→Cliente, etc.) y **Codename**. "
-            "Navega con flechas y marca con **Espacio**; **Tab** salta entre celdas."
-        )
         df_full = st.session_state["df"]
 
         # --- Sugerencias de unificación (Mercadona / Mercad / Merca → la misma) ---
@@ -1140,29 +1154,37 @@ with tab_anon:
         )
         df_filtered = df_full[df_full["Tipo"].isin(selected_types)].reset_index(drop=True)
 
+        # Columnas: dejamos solo lo esencial para no abrumar. Las internas y las
+        # secundarias (variantes, nº ocurrencias, cuenta si no es contable) se ocultan.
+        _col_cfg = {
+            "Anonimizar": st.column_config.CheckboxColumn(
+                "¿Ocultar?", default=True, width="small",
+                help="Marca lo que quieres anonimizar; desmarca lo que NO."),
+            "Tipo": st.column_config.SelectboxColumn(
+                "Tipo", options=TIPO_OPCIONES, width="small", required=True,
+                help="Cámbialo si se detectó mal (p.ej. era Cliente y puso Empresa)."),
+            "_rowid": None, "_kind": None, "_variants": None, "_account_codes": None,
+            "Variantes": None, "Ocurrencias": None,  # ocultas para simplificar
+            "Canónico": st.column_config.TextColumn(
+                "Nombre detectado", disabled=True, width="medium",
+                help="El nombre real encontrado en el documento."),
+            "Contexto": st.column_config.TextColumn(
+                "Dónde aparece (ejemplo)", disabled=True, width="large",
+                help="Una fila real del documento donde sale (su CIF/importe/factura). "
+                     "Ayuda a distinguir nombres parecidos o abreviados."),
+            "Codename": st.column_config.TextColumn(
+                "Nombre falso →", width="medium",
+                help="Lo que aparecerá en su lugar en el documento anonimizado. Editable."),
+        }
+        # La cuenta contable solo aporta en sumas y saldos; si no, se oculta.
+        if st.session_state.get("is_accounting"):
+            _col_cfg["Cuenta(s)"] = st.column_config.TextColumn(
+                "Cuenta(s)", disabled=True, width="small", help="Cuenta contable (PGC) asociada.")
+        else:
+            _col_cfg["Cuenta(s)"] = None
+
         edited = st.data_editor(
-            df_filtered,
-            column_config={
-                "Anonimizar": st.column_config.CheckboxColumn("Anonimizar", default=True, width="small"),
-                "Tipo": st.column_config.SelectboxColumn(
-                    "Tipo", options=TIPO_OPCIONES, width="small", required=True,
-                    help="Cambia si se detectó mal (p.ej. era Cliente y puso Empresa).",
-                ),
-                "_rowid": None,
-                "_kind": None,
-                "_variants": None,
-                "_account_codes": None,
-                "Canónico": st.column_config.TextColumn("Canónico", disabled=True, width="medium"),
-                "Variantes": st.column_config.TextColumn("Variantes", disabled=True, width="medium"),
-                "Contexto": st.column_config.TextColumn(
-                    "Contexto (ejemplo en el doc)", disabled=True, width="large",
-                    help="Una fila real donde aparece este nombre (su CIF/importe/factura). "
-                         "Ayuda a distinguir nombres truncados o abreviados en origen.",
-                ),
-                "Cuenta(s)": st.column_config.TextColumn("Cuenta(s) PGC", disabled=True, width="small"),
-                "Ocurrencias": st.column_config.NumberColumn("#", disabled=True, width="small"),
-                "Codename": st.column_config.TextColumn("Codename →", width="medium"),
-            },
+            df_filtered, column_config=_col_cfg,
             hide_index=True, use_container_width=True, num_rows="fixed", key="editor",
         )
 
@@ -1187,6 +1209,11 @@ with tab_anon:
                 "clusters_raw": st.session_state.get("clusters_raw", []),
             })
 
+        st.divider()
+        st.subheader("3 · Descarga el documento anonimizado")
+        _n_on = int(df_full["Anonimizar"].astype(bool).sum())
+        st.caption(f"Se ocultarán **{_n_on}** nombre(s) en **{len(st.session_state.get('upload_data', []))}** "
+                   "archivo(s). Nada sale de este equipo: descargas una copia anonimizada.")
         if st.button("✅ Anonimizar y descargar", type="primary"):
             try:
                 with st.spinner("Aplicando reemplazos y verificando..."):
