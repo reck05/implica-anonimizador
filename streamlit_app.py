@@ -205,9 +205,9 @@ with st.sidebar:
     if project_mode == "Nuevo proyecto":
         project_input = st.text_input(
             "Nombre del proyecto (codename)",
-            placeholder="paradise",
+            value="proyecto-1",
             help="Un nombre interno para este deal (solo letras/números). Ej.: «paradise». "
-                 "Se usa para guardar la lista de reemplazos.",
+                 "Se usa para guardar la lista de reemplazos. Puedes cambiarlo cuando quieras.",
         )
         project = (project_input or "").strip().lower()
     else:
