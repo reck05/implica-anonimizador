@@ -710,10 +710,10 @@ def _relation_hint(members: list) -> str:
 
 
 def _render_merge_suggestions(df_full, project: str) -> None:
-    """Sugerencias de unificación de duplicados. Para cada candidato eliges a qué
-    grupo/codename unirlo (puedes MOVERLO a otro grupo) o «❌ No unir», y luego
-    pulsas **Unificar todas** para aplicarlas de golpe. Cubre el caso
-    'Mercadona' / 'Mercad' / 'Merca' que el clustering estricto no une solo."""
+    """Sugerencias de unificación de duplicados, SIMPLE: cada grupo son nombres que
+    parecen la misma empresa; el usuario deja marcadas (casilla) las que sí lo son,
+    desmarca las que no, y pulsa Unir. Para fusionar dos grupos, edita su codename
+    al mismo. Cubre 'Mercadona'/'Mercad'/'Merca' que el clustering estricto no une."""
     from implica_anon.detectors import suggest_unifications
 
     entries = [
@@ -742,86 +742,71 @@ def _render_merge_suggestions(df_full, project: str) -> None:
     if not valid:
         return
 
-    with st.expander(f"💡 {len(valid)} posible(s) duplicado(s) del mismo nombre — revisa y unifica",
+    def _apply(groups_to_apply) -> tuple[int, list]:
+        """Aplica el codename de cada grupo a sus miembros MARCADOS."""
+        applied, nombres = 0, []
+        for g in groups_to_apply:
+            codename = (st.session_state.get(f"grpcn_{g['gi']}", g["default"]) or "").strip()
+            if not codename:
+                continue
+            for m in g["members"]:
+                rid = int(m["_rowid"])
+                if not st.session_state.get(f"chk_{g['gi']}_{rid}", True):
+                    continue  # desmarcado = "esta no es la misma"
+                idx = df_full[df_full["_rowid"] == rid].index
+                if len(idx) > 0:
+                    df_full.loc[idx[0], "Codename"] = codename
+                    applied += 1
+                    nombres.append(str(m["Canónico"]))
+        return applied, nombres
+
+    def _finish(applied, nombres):
+        if applied:
+            st.session_state["df"] = df_full
+            st.session_state["_merge_msg"] = (
+                f"✅ Unidos {applied} nombre(s): " + ", ".join(nombres[:6])
+                + ("…" if len(nombres) > 6 else "")
+            )
+            st.session_state["_merge_done"] = True
+            try:
+                st.toast(f"{applied} nombre(s) unido(s)")
+            except Exception:
+                pass
+            st.rerun()
+        else:
+            st.warning("No hay nada marcado para unir.")
+
+    with st.expander(f"💡 {len(valid)} posible(s) grupo(s) de duplicados — revisa y une",
                      expanded=len(valid) <= 3):
         st.caption(
-            "Para cada nombre elige **a qué codename unirlo** en el desplegable "
-            "(puedes **moverlo a otro grupo** o dejarlo en **❌ No unir**), y pulsa "
-            "**Unificar todas**. El codename de cada grupo es editable arriba."
+            "Cada grupo son nombres que **parecen la misma empresa**. Deja "
+            "**marcadas** las que sí lo son, **desmarca** las que no, y pulsa **Unir**. "
+            "⚠️ Si están truncados (`CONST. A`, `CONST. Y`) puede que sean **distintas** "
+            "— mira el contexto (CIF/factura)."
         )
-        st.caption(
-            "⚠️ Si los nombres están **truncados/abreviados** (p.ej. `CONST. A`, "
-            "`CONST. Y`), pueden ser empresas **distintas**: mira el **contexto** "
-            "(CIF, importe, factura) antes de unir."
-        )
-
-        # 1) Codename editable por grupo
-        for g in valid:
-            g["target"] = st.text_input(
-                f"Codename del grupo {g['gi'] + 1}  ·  {g['rep']}",
-                value=g["default"], key=f"grpcn_{g['gi']}",
-            )
-
-        target_by_gi = {g["gi"]: (g["target"] or "").strip() for g in valid}
-        rep_by_gi = {g["gi"]: g["rep"] for g in valid}
-        gi_opts = [g["gi"] for g in valid] + [None]  # None = ❌ No unir
-
-        def _fmt(gi):
-            if gi is None:
-                return "❌ No unir"
-            return f"→ {target_by_gi.get(gi, '')}  ({rep_by_gi.get(gi, '')[:22]})"
-
-        # 2) Un desplegable por candidato: a qué grupo/codename va (o no unir).
-        #    Las opciones se identifican por índice de grupo (estable aunque se
-        #    edite el codename), así que mover ≡ elegir otro grupo.
         for g in valid:
             st.markdown("---")
-            # Por qué se sugieren juntos (misma cuenta / código común / empiezan igual)
-            st.caption(f"**Grupo {g['gi'] + 1}** · 🔗 se relacionan: {_md_escape(_relation_hint(g['members']))}")
+            st.caption(f"🔗 se relacionan: {_md_escape(_relation_hint(g['members']))}")
             seen_ctx = set()
             for m in g["members"]:
                 rid = int(m["_rowid"])
-                st.selectbox(
-                    f"{m['Canónico']}  ·  {m['Ocurrencias']}×",
-                    options=gi_opts, index=gi_opts.index(g["gi"]),
-                    format_func=_fmt, key=f"asg_{rid}",
-                )
+                st.checkbox(f"{m['Canónico']}  ·  {m['Ocurrencias']}×",
+                            value=True, key=f"chk_{g['gi']}_{rid}")
                 ctx = str(m.get("Contexto", "") or "").strip()
                 if ctx and ctx != "—" and ctx not in seen_ctx:
                     seen_ctx.add(ctx)
                     st.caption("↳ " + _md_escape(ctx))
+            c1, c2 = st.columns([3, 1])
+            c1.text_input("Se unirán como", value=g["default"], key=f"grpcn_{g['gi']}",
+                          label_visibility="collapsed",
+                          help="Nombre falso que recibirán las marcadas. Edítalo para "
+                               "fusionar con otro grupo (ponle el mismo).")
+            if c2.button("Unir", key=f"mrgb_{g['gi']}"):
+                _finish(*_apply([g]))
 
-        # 3) Aplicar TODAS las asignaciones de una vez
-        if st.button("✅ Unificar todas", type="primary", key="mrg_all"):
-            applied, nombres = 0, []
-            for g in valid:
-                for m in g["members"]:
-                    rid = int(m["_rowid"])
-                    sel = st.session_state.get(f"asg_{rid}", g["gi"])
-                    if sel is None:
-                        continue
-                    codename = target_by_gi.get(sel, "").strip()
-                    if not codename:
-                        continue
-                    idx = df_full[df_full["_rowid"] == rid].index
-                    if len(idx) > 0:
-                        df_full.loc[idx[0], "Codename"] = codename
-                        applied += 1
-                        nombres.append(str(m["Canónico"]))
-            if applied:
-                st.session_state["df"] = df_full
-                st.session_state["_merge_msg"] = (
-                    f"✅ Aplicadas {applied} unión(es): "
-                    + ", ".join(nombres[:6]) + ("…" if len(nombres) > 6 else "")
-                )
-                st.session_state["_merge_done"] = True
-                try:
-                    st.toast(f"{applied} unión(es) aplicada(s)")
-                except Exception:
-                    pass
-                st.rerun()
-            else:
-                st.warning("Todo está en «❌ No unir» (o sin codename). Elige al menos un destino.")
+        st.markdown("---")
+        if st.button("✅ Unir todas las marcadas", type="primary", key="mrg_all"):
+            _finish(*_apply(valid))
 
 
 def _df_to_mapping(df: pd.DataFrame, project: str) -> mapping_mod.ProjectMapping:
