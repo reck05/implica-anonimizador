@@ -1,0 +1,9 @@
+# Dependencias OPCIONALES para la capa GLiNER (detección local de entidades M&A).
+# NO necesarias para el funcionamiento base de la app.
+#
+# Instalar solo si se va a usar GLiNER:
+#     pip install -r requirements-gliner.txt
+#
+# Arrastra torch (varios cientos de MB) y, en el primer uso, descarga el modelo
+# GLiNER (~500MB-1GB) de HuggingFace. A partir de ahí corre 100% local/offline.
+gliner>=0.2.0

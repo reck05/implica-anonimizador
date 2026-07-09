@@ -3,8 +3,9 @@
 El mapping siempre se ordena por longitud descendente para evitar reemplazos
 parciales: "Global Menta S.L." debe procesarse antes que "Global Menta".
 
-El reemplazo es case-sensitive por defecto pero también prueba el match
-case-insensitive y conserva la capitalización del original cuando es posible.
+El reemplazo es case-insensitive. La clase `Replacer` compila el patrón UNA vez
+y se reutiliza para todas las celdas/párrafos de un documento — crítico para
+rendimiento en Excels grandes (antes se recompilaba el regex por celda).
 """
 from __future__ import annotations
 
@@ -29,36 +30,76 @@ def _build_pattern(originals: Iterable[str]) -> re.Pattern[str]:
     return re.compile("|".join(parts), re.IGNORECASE)
 
 
-def replace_in_text(text: str, mapping: dict[str, str]) -> tuple[str, int]:
+class Replacer:
+    """Reemplazador precompilado. Construye el patrón una vez y lo reutiliza.
+
+    Uso:
+        r = Replacer(mapping)
+        nuevo, n = r.apply(texto)          # reemplaza
+        sobreviven = r.find_surviving(out) # verifica que nada quedó sin reemplazar
+    """
+
+    def __init__(self, mapping: dict[str, str]):
+        # Ordenar por longitud descendente: "Global Menta S.L." antes que "Global Menta"
+        ordered = sorted(
+            ((k, v) for k, v in mapping.items() if k),
+            key=lambda kv: -len(kv[0]),
+        )
+        self._lookup = {k.lower(): v for k, v in ordered}
+        self._originals = [k for k, _ in ordered]
+        self._pattern = _build_pattern(self._originals)
+
+    def apply(self, text: str) -> tuple[str, int]:
+        """Aplica el mapping a `text`. Devuelve (texto_modificado, num_reemplazos)."""
+        if not text or not self._lookup:
+            return text, 0
+        count = 0
+
+        def _sub(m: re.Match[str]) -> str:
+            nonlocal count
+            replacement = self._lookup.get(m.group(0).lower())
+            if replacement is None:
+                return m.group(0)
+            count += 1
+            return replacement
+
+        return self._pattern.sub(_sub, text), count
+
+    def find_surviving(self, text: str) -> list[str]:
+        """Devuelve los originales que SIGUEN presentes en `text` como PALABRA COMPLETA.
+
+        Se usa para verificar tras anonimizar que ningún nombre real quedó visible.
+        Lista vacía = anonimización limpia.
+
+        Coincidencia por palabra completa (igual que el reemplazo), NO substring:
+        antes "CON" se encontraba dentro de "construcciones" o de la palabra "con"
+        y daba decenas de falsos positivos. Además se ignoran fragmentos de < 4
+        caracteres: son demasiado cortos para verificarse de forma fiable.
+        """
+        if not text:
+            return []
+        low = text.lower()
+        out = []
+        for o in self._originals:
+            ol = o.strip().lower()
+            if len(ol) < 4:
+                continue  # fragmentos cortos no verificables (evita falsos positivos)
+            # palabra/token completo: sin carácter alfanumérico pegado a los lados
+            if re.search(r"(?<![0-9a-zñáéíóú])" + re.escape(ol) + r"(?![0-9a-zñáéíóú])", low):
+                out.append(o)
+        return out
+
+
+def replace_in_text(text: str, mapping) -> tuple[str, int]:
     """Aplica `mapping` a `text` (case-insensitive, ordenado por longitud desc).
+
+    Acepta un dict {original: codename} O un Replacer ya construido. Pasar un
+    Replacer evita recompilar el patrón en cada llamada (úsalo en bucles).
 
     Devuelve (texto_modificado, num_reemplazos).
     """
+    if isinstance(mapping, Replacer):
+        return mapping.apply(text)
     if not text or not mapping:
         return text, 0
-
-    # mapping ya viene ordenado por longitud desc desde ProjectMapping.all_replacements
-    # pero por seguridad lo re-ordenamos
-    ordered = sorted(mapping.items(), key=lambda kv: -len(kv[0]))
-    lookup = {k.lower(): v for k, v in ordered}
-    pattern = _build_pattern(k for k, _ in ordered)
-
-    count = 0
-
-    def _sub(m: re.Match[str]) -> str:
-        nonlocal count
-        matched = m.group(0)
-        replacement = lookup.get(matched.lower())
-        if replacement is None:
-            return matched
-        count += 1
-        return replacement
-
-    return pattern.sub(_sub, text), count
-
-
-def text_contains_any(text: str, originals: Iterable[str]) -> bool:
-    if not text:
-        return False
-    low = text.lower()
-    return any(o.lower() in low for o in originals if o)
+    return Replacer(mapping).apply(text)

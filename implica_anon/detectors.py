@@ -39,6 +39,81 @@ EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 PHONE_ES_RE = re.compile(r"\b(?:\+?34[\s.-]?)?(?:6\d{2}|7[1-9]\d|9\d{2}|8\d{2})[\s.-]?\d{2,3}[\s.-]?\d{3}\b")
 
 
+# --- Validación por dígito de control (precisión: descartar falsos positivos) ---
+# El formato regex matchea muchas cadenas "tipo NIF/CIF" que no lo son (códigos de
+# producto, referencias...). El checksum confirma si es un identificador REAL.
+
+_NIF_LETTERS = "TRWAGMYFPDXBNJZSQVHLCKE"
+_CIF_CONTROL_LETTERS = "JABCDEFGHI"
+
+
+def validate_nif(s: str) -> bool:
+    """NIF (8 dígitos + letra) o NIE (X/Y/Z + 7 dígitos + letra), letra mod-23."""
+    m = re.fullmatch(r"(?:([XYZ])(\d{7})|(\d{8}))([A-Z])", s.strip().upper())
+    if not m:
+        return False
+    pre, nie_digits, nif_digits, letter = m.groups()
+    num = (str("XYZ".index(pre)) + nie_digits) if pre else nif_digits
+    try:
+        return _NIF_LETTERS[int(num) % 23] == letter
+    except Exception:
+        return False
+
+
+def validate_cif(s: str) -> bool:
+    """CIF: letra de organización + 7 dígitos + control (dígito o letra)."""
+    m = re.fullmatch(r"([ABCDEFGHJKLMNPQRSUVW])(\d{7})([0-9A-J])", s.strip().upper())
+    if not m:
+        return False
+    _org, digits, control = m.groups()
+    total = 0
+    for i, ch in enumerate(digits):
+        d = int(ch)
+        if i % 2 == 0:  # posición impar (1ª, 3ª...) → se dobla
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    cd = (10 - (total % 10)) % 10
+    # Según el tipo de organización el control es dígito o letra; aceptamos ambos.
+    return control == str(cd) or control == _CIF_CONTROL_LETTERS[cd]
+
+
+def validate_iban(s: str) -> bool:
+    """IBAN español: ES + 22 dígitos, validación mod-97 == 1."""
+    bare = re.sub(r"\s", "", s.strip().upper())
+    if not re.fullmatch(r"ES\d{22}", bare):
+        return False
+    rearranged = bare[4:] + bare[:4]
+    try:
+        num = "".join(str(int(c, 36)) for c in rearranged)
+        return int(num) % 97 == 1
+    except Exception:
+        return False
+
+
+# Etiquetas de contexto: si el documento marca explícitamente "CIF: ..." confiamos
+# en la etiqueta aunque el checksum falle (tolera erratas/OCR en el identificador).
+_CTX_LABELS = {
+    "CIF": ("cif", "c.i.f", "c/c.i.f"),
+    "NIF": ("nif", "nie", "dni", "n.i.f", "d.n.i"),
+    "IBAN": ("iban", "cuenta", "cta", "c/c", "ccc"),
+}
+_VALIDATORS = {"CIF": validate_cif, "NIF": validate_nif, "IBAN": validate_iban}
+
+
+def _keep_structured_id(kind: str, value: str, full_text: str, start: int) -> bool:
+    """¿Mantener este match de CIF/NIF/IBAN? Sí si pasa checksum, o si lleva una
+    etiqueta de contexto cerca ("CIF: ...") aunque el checksum falle (erratas/OCR)."""
+    validator = _VALIDATORS.get(kind)
+    if validator and validator(value):
+        return True
+    # Ventana de contexto más amplia (40 chars) y con espacios/saltos normalizados,
+    # para cazar etiquetas tipo "C.I.F.:\n   B12..." separadas del número.
+    ctx = re.sub(r"[\s]+", " ", full_text[max(0, start - 40):start].lower())
+    return any(lbl in ctx for lbl in _CTX_LABELS.get(kind, ()))
+
+
 # Sufijos societarios que normalizamos al clusterizar
 SOCIETY_SUFFIXES = (
     "s.l.u.", "s.l.u", "slu",
@@ -125,15 +200,49 @@ FORMULA_PATTERNS = [
     re.compile(r"^Agregado!", re.IGNORECASE),
 ]
 
+# Referencias documentales (facturas, albaranes, pedidos...). NO son nombres de empresa.
+# El nombre de la empresa es lo que se anonimiza; el número de factura NO.
+DOC_PREFIXES = frozenset([
+    "factura", "facturas", "fact", "fac", "fra", "fras",
+    "albaran", "albarán", "albaranes", "pedido", "pedidos",
+    "presupuesto", "presupuestos", "ticket", "recibo", "recibos", "abono",
+    "ref", "referencia", "asiento", "apunte", "documento", "nº", "núm", "num", "n.º",
+])
+# Código tipo factura: "FAC-PRE25-00761", "ALB/2025-001", "PRE25-04761"
+DOC_CODE_RE = re.compile(r"[A-Za-z]{2,}[-/][A-Za-z0-9]*\d{2,}")
+# 5+ dígitos seguidos = número de documento/referencia (las empresas con año tienen 4)
+MANY_DIGITS_RE = re.compile(r"\d{5,}")
+
+
+def _is_document_ref(text: str) -> bool:
+    """True si el texto es una referencia de factura/albarán/pedido, no un nombre."""
+    s = text.strip()
+    if not s:
+        return False
+    tokens = s.split()
+    if tokens:
+        first = tokens[0].lower().strip(".:#-º")
+        if first in DOC_PREFIXES:
+            return True
+    if DOC_CODE_RE.search(s):
+        return True
+    if MANY_DIGITS_RE.search(s):
+        return True
+    return False
+
 
 def _looks_like_excel_artifact(text: str) -> bool:
-    """True si el texto huele a artefacto de Excel (fórmula, referencia, fragmento)."""
+    """True si el texto huele a artefacto de Excel (fórmula, referencia, fragmento)
+    o a referencia documental (factura, albarán...)."""
     if not text or len(text) < 2:
         return True
     s = text.strip()
     for pat in FORMULA_PATTERNS:
         if pat.search(s):
             return True
+    # Referencias documentales (facturas, albaranes, pedidos): no son empresas
+    if _is_document_ref(s):
+        return True
     # Strings cortos de 1-3 chars en mayúsculas con dígitos = referencia rota
     if re.fullmatch(r"[A-Z]{1,3}\d{1,4}", s):
         return True
@@ -224,25 +333,31 @@ def normalize_person(name: str) -> str:
     return re.sub(r"\s+", " ", name.lower().strip())
 
 
+# Razón por la que spaCy no está disponible (para avisar en la UI). None = disponible.
+NLP_UNAVAILABLE_REASON: str | None = None
+
+
 @lru_cache(maxsize=1)
 def _load_nlp():
-    """Carga spaCy en español. Cacheado porque es lento.
+    """Carga spaCy en español. Devuelve el modelo, o None si no está disponible.
 
-    Si el modelo no está instalado (típico en Streamlit Cloud la primera vez),
-    lo descarga automáticamente. Solo se hace en el primer uso.
+    NO lanza excepción: si spaCy no está instalado, el modelo no se puede
+    descargar, o el sistema lo bloquea (p.ej. Application Control de Windows),
+    devuelve None y el detector cae a heurísticas regex (`_heuristic_entities`).
+    Así la herramienta funciona aunque spaCy esté bloqueado.
     """
+    global NLP_UNAVAILABLE_REASON
     try:
         import spacy
-    except ImportError as e:
-        raise RuntimeError(
-            "spaCy no está instalado. Ejecuta: pip install spacy"
-        ) from e
+    except Exception as e:  # ImportError, o DLL bloqueado al importar
+        NLP_UNAVAILABLE_REASON = f"spaCy no se pudo importar ({type(e).__name__}). Usando detector heurístico."
+        return None
 
     model_name = "es_core_news_md"
     try:
         return spacy.load(model_name)
     except OSError:
-        # Modelo no instalado — descargar al vuelo (~40MB)
+        # Modelo no instalado — intentar descargar al vuelo (~40MB)
         import subprocess
         import sys
         try:
@@ -252,12 +367,99 @@ def _load_nlp():
                 capture_output=True,
                 timeout=300,
             )
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            raise RuntimeError(
-                f"No se pudo descargar el modelo {model_name}. "
-                "Ejecuta manualmente: python -m spacy download es_core_news_md"
-            ) from e
-        return spacy.load(model_name)
+            return spacy.load(model_name)
+        except Exception as e:
+            NLP_UNAVAILABLE_REASON = (
+                f"No se pudo cargar/descargar el modelo es_core_news_md "
+                f"({type(e).__name__}). Usando detector heurístico."
+            )
+            return None
+    except Exception as e:
+        # Cualquier otro fallo (DLL bloqueado por Application Control, etc.)
+        NLP_UNAVAILABLE_REASON = (
+            f"spaCy no se pudo cargar ({type(e).__name__}). Usando detector heurístico."
+        )
+        return None
+
+
+# --- Detector heurístico de respaldo (sin spaCy) ---
+
+# Empresas: nombre + sufijo societario. Alta precisión.
+HEURISTIC_ORG_RE = re.compile(
+    r"\b([A-ZÁÉÍÓÚÑ][\wÁÉÍÓÚÑáéíóúñ&./\- ]{1,70}?)"
+    r"[,\s]+"
+    r"(S\.?L\.?U\.?|S\.?A\.?U\.?|S\.?L\.?L\.?|S\.?L\.?P\.?|S\.?L\.?|S\.?A\.?|"
+    r"S\.?Coop\.?|S\.?C\.?P\.?|S\.?C\.?|Ltda?\.?|Limited|Inc\.?|Corp\.?|GmbH|AG|BV|NV|PLC)"
+    r"(?=\s|$|[,;:.)\"'\n])",
+    re.UNICODE,
+)
+
+# Empresas en MAYÚSCULAS: 2+ palabras de 3+ letras todas en mayúsculas.
+HEURISTIC_UPPER_RE = re.compile(
+    r"\b([A-ZÁÉÍÓÚÑ]{3,}(?:[ &\-][A-ZÁÉÍÓÚÑ]{2,}){1,5})\b"
+)
+
+
+def _heuristic_entities(texts: Iterable[str]) -> tuple[Counter, Counter]:
+    """Detecta empresas y personas sin spaCy, por reglas.
+
+    Conservador: prioriza precisión (pocos falsos positivos) sobre cobertura,
+    porque el usuario revisa la tabla. Cubre el caso de spaCy bloqueado.
+    """
+    org_counts: Counter[str] = Counter()
+    per_counts: Counter[str] = Counter()
+
+    # Procesar cada texto único una sola vez (los Excel repiten mucho el mismo valor)
+    for text in dict.fromkeys(t for t in texts if t):
+        if not text:
+            continue
+
+        # Empresas con sufijo societario (nombre completo CON sufijo)
+        for m in HEURISTIC_ORG_RE.finditer(text):
+            full = m.group(0).strip().rstrip(",")
+            name_part = m.group(1).strip()
+            if name_part.lower() in GENERIC_STOPWORDS:
+                continue
+            if _looks_like_excel_artifact(full):
+                continue
+            org_counts[full] += 1
+
+        # Empresas en MAYÚSCULAS (sin sufijo): "DISTRIBUCIONES BADIA"
+        for m in HEURISTIC_UPPER_RE.finditer(text):
+            val = m.group(1).strip()
+            if val.lower() in GENERIC_STOPWORDS:
+                continue
+            # Evitar capturar cabeceras tipo "SALDO INICIAL", "TOTAL DEBE"
+            tokens = val.split()
+            if all(t.lower() in GENERIC_STOPWORDS for t in tokens):
+                continue
+            if _looks_like_excel_artifact(val):
+                continue
+            org_counts[val] += 1
+
+        # Personas: nombre común español + 1-2 apellidos capitalizados
+        tokens = text.split()
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i].strip(".,;:()\"'")
+            if tok.lower() in COMMON_GIVEN_NAMES:
+                # recoger apellidos siguientes capitalizados
+                name_parts = [tok]
+                j = i + 1
+                while j < len(tokens) and j < i + 3:
+                    nxt = tokens[j].strip(".,;:()\"'")
+                    if nxt and nxt[0:1].isupper() and nxt.lower() not in GENERIC_STOPWORDS and nxt.isalpha():
+                        name_parts.append(nxt)
+                        j += 1
+                    else:
+                        break
+                if len(name_parts) >= 2:  # nombre + al menos 1 apellido
+                    per_counts[" ".join(name_parts)] += 1
+                i = j
+            else:
+                i += 1
+
+    return org_counts, per_counts
 
 
 def detect_candidates(
@@ -270,11 +472,13 @@ def detect_candidates(
     `skip_ner=True` ejecuta solo regex (CIF/NIF/IBAN/email/teléfono/dirección)
     y omite spaCy. Útil cuando ya tienes el detector PGC dándote las
     empresas/personas con 100% de cobertura y no quieres que spaCy meta ruido.
+
+    Si `skip_ner=False` pero spaCy no está disponible (bloqueado/ausente), cae
+    a un detector heurístico por reglas en vez de spaCy.
     """
-    if not skip_ner:
-        nlp = _load_nlp()
-    else:
-        nlp = None
+    nlp = None if skip_ner else _load_nlp()
+    # Si queremos NER pero spaCy no carga, usamos heurística regex.
+    use_heuristic = (not skip_ner) and (nlp is None)
 
     org_counts: Counter[str] = Counter()
     per_counts: Counter[str] = Counter()
@@ -282,16 +486,21 @@ def detect_candidates(
 
     full_text = "\n".join(t for t in texts if t)
 
-    # Regex primero — son rápidos y deterministas
+    # Regex primero — son rápidos y deterministas. Validamos por checksum: un match
+    # con formato de CIF/NIF/IBAN solo se acepta si pasa el dígito de control O lleva
+    # una etiqueta de contexto delante (CIF:/NIF:/IBAN). Así no anonimizamos códigos
+    # de producto o referencias que solo "parecen" un identificador.
     for m in CIF_RE.finditer(full_text):
-        structured["CIF"].add(m.group())
+        if _keep_structured_id("CIF", m.group(), full_text, m.start()):
+            structured["CIF"].add(m.group())
     for m in NIF_RE.finditer(full_text):
         val = m.group()
         # Evitar duplicar con CIF (los CIF empiezan por letras válidas)
-        if val not in structured.get("CIF", set()):
+        if val not in structured.get("CIF", set()) and _keep_structured_id("NIF", val, full_text, m.start()):
             structured["NIF"].add(val)
     for m in IBAN_RE.finditer(full_text):
-        structured["IBAN"].add(m.group())
+        if _keep_structured_id("IBAN", m.group(), full_text, m.start()):
+            structured["IBAN"].add(m.group())
     for m in ADDRESS_RE.finditer(full_text):
         structured["ADDRESS"].add(m.group().strip())
     for m in EMAIL_RE.finditer(full_text):
@@ -304,8 +513,8 @@ def detect_candidates(
     for values in structured.values():
         structured_values.update(values)
 
-    if nlp is None:
-        # Modo regex-only: salimos sin pasar por spaCy
+    if skip_ner:
+        # Modo regex-only (PGC ya cubre empresas/personas): salimos sin NER
         candidates: list[Candidate] = []
         for kind, values in structured.items():
             for value in values:
@@ -313,11 +522,32 @@ def detect_candidates(
                 candidates.append(Candidate(text=value, kind=kind, count=count, source="regex"))
         return candidates
 
-    # spaCy para ORG y PER
-    for text in texts:
-        if not text or len(text) > 1_000_000:
-            continue
-        doc = nlp(text)
+    if use_heuristic:
+        # Fallback sin spaCy: detección por reglas
+        h_orgs, h_pers = _heuristic_entities(texts)
+        for value, cnt in h_orgs.items():
+            if value.lower() in GENERIC_STOPWORDS or value in structured_values:
+                continue
+            org_counts[value] += cnt
+        for value, cnt in h_pers.items():
+            if value.lower() in GENERIC_STOPWORDS:
+                continue
+            per_counts[value] += cnt
+
+    # spaCy para ORG y PER (solo si está disponible).
+    # Optimización clave: procesar cada texto ÚNICO una sola vez (los Excel repiten
+    # muchísimo el mismo nombre) + por lotes (nlp.pipe) + desactivando los
+    # componentes que no usamos (solo necesitamos NER). Esto baja de ~23s a ~2-3s.
+    if nlp is not None:
+        unique_texts = list(dict.fromkeys(
+            t for t in texts if t and len(t) <= 100_000
+        ))
+        keep = {"ner", "tok2vec", "transformer"}
+        disable = [p for p in nlp.pipe_names if p not in keep]
+        docs_iter = nlp.pipe(unique_texts, batch_size=64, disable=disable)
+    else:
+        docs_iter = []
+    for doc in docs_iter:
         for ent in doc.ents:
             label = ent.label_
             value = ent.text.strip(" .,;:\"'()")
@@ -387,7 +617,182 @@ def detect_candidates(
             count = full_text.count(value)
             candidates.append(Candidate(text=value, kind=kind, count=count, source="regex"))
 
+    # Capas OPCIONALES (solo en modo NER / texto libre, nunca en PGC). Desactivadas
+    # por defecto; añaden candidatos nuevos sin tocar el resto.
+    candidates.extend(_gliner_candidates(full_text, candidates))
+    candidates.extend(_presidio_candidates(full_text, candidates))
+
     return candidates
+
+
+def _presidio_candidates(full_text: str, existing: list[Candidate]) -> list[Candidate]:
+    """Augmentación opcional con Presidio (PERSON/ORG con spans completos). Devuelve
+    [] si está desactivado o no disponible. Deduplica contra lo ya detectado y aplica
+    los mismos filtros de ruido. NUNCA rompe el pipeline."""
+    try:
+        from . import presidio_detector
+    except Exception:
+        return []
+    if not presidio_detector.is_enabled():
+        return []
+    try:
+        raw = presidio_detector.detect_presidio_entities(full_text)
+    except Exception:
+        return []
+    if not raw:
+        return []
+
+    existing_norm = {c.text.strip().lower() for c in existing}
+    seen: set = set()
+    out: list[Candidate] = []
+    for text, label, _score in raw:
+        t = text.strip(" .,;:\"'()")
+        key = t.lower()
+        if not t or len(t) < 2 or key in existing_norm or key in seen:
+            continue
+        if key in GENERIC_STOPWORDS or _looks_like_excel_artifact(t) or _is_lone_first_name(t):
+            continue
+        kind = presidio_detector.PRESIDIO_LABEL_TO_KIND.get(label, "PER")
+        seen.add(key)
+        out.append(Candidate(text=t, kind=kind, count=full_text.count(t) or 1,
+                             source=f"presidio:{label}"))
+    return out
+
+
+def _gliner_candidates(full_text: str, existing: list[Candidate]) -> list[Candidate]:
+    """Augmentación opcional con GLiNER. Devuelve [] si está desactivado o no
+    disponible. Deduplica contra los candidatos ya detectados (spaCy/regex/heurística)
+    y aplica los mismos filtros de ruido. NUNCA rompe el pipeline."""
+    try:
+        from . import gliner_detector
+    except Exception:
+        return []
+    if not gliner_detector.is_enabled():
+        return []
+    try:
+        raw = gliner_detector.detect_gliner_entities(full_text)
+    except Exception:
+        return []
+    if not raw:
+        return []
+
+    existing_norm = {c.text.strip().lower() for c in existing}
+    seen: set = set()
+    out: list[Candidate] = []
+    for text, label, _score in raw:
+        t = text.strip()
+        key = t.lower()
+        if not t or key in existing_norm or key in seen:
+            continue  # dedup vs spaCy/regex y vs sí mismo
+        if key in GENERIC_STOPWORDS or _looks_like_excel_artifact(t):
+            continue  # mismos filtros de ruido que el resto
+        kind = gliner_detector.GLINER_LABEL_TO_KIND.get(label, "ORG")
+        seen.add(key)
+        out.append(
+            Candidate(
+                text=t,
+                kind=kind,
+                count=full_text.count(t) or 1,
+                source=f"gliner:{label}",  # etiqueta fina M&A para trazabilidad
+            )
+        )
+    return out
+
+
+def _same_entity_norm(na: str, nb: str) -> bool:
+    """Igual que `_maybe_same_entity` pero recibe nombres YA normalizados
+    (compactados por `normalize_org`, sin espacios). Evita re-normalizar en
+    cada comparación — crítico para el rendimiento de `suggest_unifications`,
+    que compara muchos pares dentro de un mismo bloque."""
+    if not na or not nb or na == nb:
+        return False
+    short, lng = sorted([na, nb], key=len)
+    # 1) Abreviatura/prefijo: el corto (≥4 chars) es prefijo del largo. Muy fiable:
+    #    "mercad" → "mercadona", "distrib" → "distribuciones".
+    if len(short) >= 4 and lng.startswith(short):
+        return True
+    # 2) Fuzzy SOLO para nombres con cuerpo (≥6 chars) y banda ALTA (typos reales),
+    #    con token_sort_ratio (no token_set, que es demasiado permisivo con siglas
+    #    cortas y agrupaba 'ORIOL' con 'BRICOL'). Por debajo de 6 chars, solo prefijo.
+    if len(short) >= 6:
+        score = fuzz.token_sort_ratio(na, nb)
+        if 82 <= score < 95:
+            return True
+    return False
+
+
+def _maybe_same_entity(a: str, b: str) -> bool:
+    """Heurística para SUGERIR (no decidir) que dos nombres son la misma entidad.
+
+    Más laxa que el clustering automático (umbral 90): captura la zona gris
+    (similitud media o abreviaturas tipo 'Mercad' → 'Mercadona') para que el
+    humano confirme. NO se aplica automáticamente — solo genera sugerencias.
+    """
+    return _same_entity_norm(normalize_org(a), normalize_org(b))
+
+
+# Kinds que SÍ son nombres y tiene sentido sugerir unificar (empresas/personas).
+# Los identificadores estructurados (CIF/NIF/IBAN/email/teléfono/dirección) son
+# valores únicos: NUNCA se "unifican" por parecido — dos CIF que difieren en un
+# dígito NO son la misma entidad. Excluirlos también evita el coste de comparar
+# miles de CIF casi idénticos por fuzzy.
+_UNIFIABLE_KINDS = frozenset({
+    "ORG", "PER", "CLIENTE", "PROVEEDOR", "DEUDOR", "PERSONA", "GRUPO", "BANCO",
+})
+
+
+def suggest_unifications(entries: list[tuple]) -> list[list]:
+    """Agrupa candidatos que PODRÍAN ser la misma entidad (para sugerir al usuario).
+
+    `entries`: lista de (id, kind, nombre). Devuelve grupos [[id, id, ...]] con
+    2+ miembros del mismo kind que parecen la misma empresa pero que el
+    clustering automático no unió. El usuario decide si unificarlos.
+
+    Solo considera nombres (empresas/personas); los identificadores estructurados
+    (CIF/NIF/IBAN/email/teléfono/dirección) se ignoran — son valores únicos.
+    """
+    # Índice por bloque (kind + primeros 2 chars del nombre normalizado) para no
+    # comparar todos contra todos en cada rerun de la UI. Casi O(n). El coste real
+    # estaba en re-normalizar ambos nombres en cada comparación; ahora usamos el
+    # `nm` ya cacheado (`_same_entity_norm`), así que el bloque de 2 chars vuela.
+    norm_map: dict = {}
+    by_block: dict = defaultdict(list)
+    order: list = []
+    for id_, kind, name in entries:
+        if kind not in _UNIFIABLE_KINDS:
+            continue  # CIF/NIF/IBAN/... no se sugieren para unificar
+        nm = normalize_org(name)
+        norm_map[id_] = (kind, name, nm)
+        order.append(id_)
+        if nm:
+            by_block[(kind, nm[:2])].append(id_)
+
+    # Salvaguarda anti-cuelgue: un bloque enorme (miles de nombres casi idénticos)
+    # daría O(n²) dentro del bloque. Por encima de este tamaño no sugerimos para ese
+    # bloque — las sugerencias son una comodidad opcional, no deben colgar la UI.
+    MAX_BLOCK = 250
+
+    groups: list[list] = []
+    used: set = set()
+    for id_a in order:
+        if id_a in used:
+            continue
+        kind_a, name_a, nm_a = norm_map[id_a]
+        if not nm_a:
+            continue
+        block = by_block.get((kind_a, nm_a[:2]), ())
+        if len(block) > MAX_BLOCK:
+            continue
+        group = [id_a]
+        for id_b in block:  # solo el mismo bloque
+            if id_b == id_a or id_b in used:
+                continue
+            if _same_entity_norm(nm_a, norm_map[id_b][2]):  # norm ya cacheado
+                group.append(id_b)
+        if len(group) > 1:
+            groups.append(group)
+            used.update(group)
+    return groups
 
 
 def candidates_from_pgc(scan_result) -> list[Candidate]:
@@ -442,7 +847,6 @@ def cluster_variants(
     """
     structured_kinds = {"CIF", "NIF", "IBAN", "EMAIL", "PHONE", "ADDRESS"}
     org_like_kinds = {"ORG", "CLIENTE", "PROVEEDOR", "DEUDOR", "GRUPO", "BANCO"}
-    per_like_kinds = {"PER", "PERSONA"}
 
     by_kind: dict[str, list[Candidate]] = defaultdict(list)
     for c in candidates:
@@ -464,52 +868,55 @@ def cluster_variants(
                 )
             continue
 
-        # Para ORG-like/PER-like: fuzzy clustering greedy
+        # Para ORG-like/PER-like: fuzzy clustering con ÍNDICE POR BLOQUES.
+        # En vez de comparar cada nombre contra todos (O(n²) + normalizar en cada
+        # comparación, que colgaba el servidor con cientos de nombres), normalizamos
+        # UNA vez y solo comparamos contra clusters del mismo bloque (primeros 2
+        # caracteres del nombre normalizado) y de longitud parecida → casi O(n).
         is_org_like = kind in org_like_kinds
         normalize = normalize_org if is_org_like else normalize_person
         items_sorted = sorted(items, key=lambda c: (-len(c.text), -c.count))
         clusters_for_kind: list[Cluster] = []
+        blocks: dict[str, list[dict]] = defaultdict(list)  # bkey -> [{cluster, norm}]
 
         for cand in items_sorted:
             norm = normalize(cand.text)
             if not norm:
                 continue
-            # Si después de normalizar quedan menos de 4 chars (palabras genéricas
-            # como "asociados" tras quitar sufijo), saltar al cluster propio sin
-            # hacer fuzzy match — evita falsas fusiones.
+            # Menos de 5 chars tras normalizar (genéricos como "asociados" sin sufijo)
+            # → cluster propio sin fuzzy, evita falsas fusiones.
             skip_fuzzy = len(norm) < 5
 
             matched = None
             if not skip_fuzzy:
-                for cluster in clusters_for_kind:
-                    for variant in cluster.variants:
-                        norm_variant = normalize(variant)
-                        # Doble verificación: token_sort_ratio Y ratio simple.
-                        # token_set_ratio es muy permisivo; lo evitamos.
-                        sort_score = fuzz.token_sort_ratio(norm, norm_variant)
-                        simple_score = fuzz.ratio(norm, norm_variant)
-                        if sort_score >= threshold and simple_score >= (threshold - 10):
-                            matched = cluster
-                            break
-                    if matched:
+                bkey = norm[:2]
+                for entry in blocks.get(bkey, ()):  # solo el mismo bloque
+                    cn = entry["norm"]  # norm del canónico, ya cacheado
+                    if abs(len(cn) - len(norm)) > 6:
+                        continue  # longitudes muy dispares → no es variante
+                    if (fuzz.token_sort_ratio(norm, cn) >= threshold
+                            and fuzz.ratio(norm, cn) >= threshold - 10):
+                        matched = entry
                         break
             if matched:
-                matched.variants.append(cand.text)
-                matched.total_count += cand.count
-                if cand.account_code and cand.account_code not in matched.account_codes:
-                    matched.account_codes.append(cand.account_code)
-                if len(cand.text) > len(matched.canonical):
-                    matched.canonical = cand.text
+                cl = matched["cluster"]
+                cl.variants.append(cand.text)
+                cl.total_count += cand.count
+                if cand.account_code and cand.account_code not in cl.account_codes:
+                    cl.account_codes.append(cand.account_code)
+                if len(cand.text) > len(cl.canonical):
+                    cl.canonical = cand.text  # el canónico cambia, su norm no re-indexa
             else:
-                clusters_for_kind.append(
-                    Cluster(
-                        kind=kind,
-                        canonical=cand.text,
-                        variants=[cand.text],
-                        total_count=cand.count,
-                        account_codes=[cand.account_code] if cand.account_code else [],
-                    )
+                cl = Cluster(
+                    kind=kind,
+                    canonical=cand.text,
+                    variants=[cand.text],
+                    total_count=cand.count,
+                    account_codes=[cand.account_code] if cand.account_code else [],
                 )
+                clusters_for_kind.append(cl)
+                if not skip_fuzzy:
+                    blocks[norm[:2]].append({"cluster": cl, "norm": norm})
 
         clusters.extend(clusters_for_kind)
 
@@ -524,17 +931,35 @@ def cluster_variants(
                 pgc_texts_normalized.add(normalize_org(v))
                 pgc_texts_normalized.add(normalize_person(v))
 
+    # Conjunto compactado (sin espacios) de los nombres autoritativos, para
+    # detectar fragmentos que spaCy recortó: "sirena" ⊂ "lasirena" (LA SIRENA SL).
+    pgc_compact = {n for n in pgc_texts_normalized if len(n) >= 4}
+
     deduped_clusters: list[Cluster] = []
     for c in clusters:
         if c.kind in ("ORG", "PER"):
-            # ¿Alguna de sus variantes ya está en un cluster PGC?
+            # ¿Alguna de sus variantes ya está en un cluster PGC/columna-nombre,
+            # exacta o como fragmento contenido en un nombre más completo?
             in_pgc = False
             for v in c.variants:
-                if normalize_org(v) in pgc_texts_normalized or normalize_person(v) in pgc_texts_normalized:
+                nv = normalize_org(v)
+                if nv in pgc_texts_normalized or normalize_person(v) in pgc_texts_normalized:
+                    in_pgc = True
+                    break
+                # Fragmento recortado por spaCy contenido en un nombre completo
+                # autoritativo ("ALMACENES" ⊂ "RIVASALMACENES"). Solo descartamos si
+                # es RARO (aparece <3 veces) y MUCHO más corto (<60% del nombre
+                # completo): así no perdemos una empresa legítima corta que sea
+                # frecuente o solo algo más corta que otra (p.ej. "Azul" cliente real
+                # vs "Azul Marketing SL"). Prima NO perder cobertura (= no dejar
+                # nombres sin anonimizar) sobre quitar una fila de ruido.
+                if (len(nv) >= 4 and c.total_count < 3
+                        and any(nv != pn and nv in pn and len(nv) < 0.6 * len(pn)
+                                for pn in pgc_compact)):
                     in_pgc = True
                     break
             if in_pgc:
-                continue  # descartamos el cluster NER, el PGC ya lo cubre
+                continue  # descartamos el cluster NER, el autoritativo ya lo cubre
         deduped_clusters.append(c)
     clusters = deduped_clusters
 

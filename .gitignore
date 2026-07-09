@@ -19,6 +19,9 @@ build/
 # --- DATOS CONFIDENCIALES — JAMÁS commitear ---
 # Mappings con nombres reales de clientes
 projects/*.json
+projects/*.jsonl
+projects/.backups/
+projects/.cache/
 !projects/.gitkeep
 # Carpetas con documentos del cliente
 input/
@@ -36,6 +39,12 @@ real/
 # --- Logs ---
 *.log
 logs/
+
+# --- Salidas generadas por el benchmark (se regeneran al ejecutarlo) ---
+benchmark_outputs/
+benchmark_resultado.md
+benchmark_resultado.csv
+benchmark_resultado.json
 
 # --- IDE ---
 .vscode/

@@ -22,6 +22,14 @@ if errorlevel 1 (
     python -m spacy download es_core_news_md
 )
 
+REM Comprueba el cifrado de la cache (cryptography). Si falta, la app no
+REM guardara la cache en claro: la instalamos para que "Reanudar" funcione cifrado.
+python -c "import cryptography" >nul 2>nul
+if errorlevel 1 (
+    echo [INFO] Instalando cifrado de cache (cryptography)...
+    pip install "cryptography>=42.0.0" >nul 2>nul
+)
+
 echo.
 echo ================================================
 echo   Implica Anonimizador - Arrancando UI
